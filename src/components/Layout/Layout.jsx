@@ -5,13 +5,11 @@ import {
   PackageCheck,
   LayoutGrid,
   Users,
-  MessageCircle,
   Settings,
   ChevronDown,
   ChevronRight,
   Search,
   Bell,
-  User,
   Menu,
   LogOut,
   Sun,
@@ -23,19 +21,14 @@ import Dashboard from '../../Pages/Dashboard/Dashboard';
 import ProductsTable from '../../Pages/Products/Products';
 import AddProductPage from '../../Pages/AddProductPage/AddProductPage';
 import CustomersPage from '../../Pages/Customers/Customers';
+import SellerSettingsPage from '../../Pages/Settings/Settings';
 
 const Layout = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 1024);
-  const [isDarkMode, setIsDarkMode] = useState(true); // Set dark mode as default
-  const [showNotifications, setShowNotifications] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [activeMenu, setActiveMenu] = useState('Dashboard');
   const [searchQuery, setSearchQuery] = useState('');
-  const [notifications, setNotifications] = useState([
-    { id: 1, icon: <ShoppingCart size={14} />, title: 'New Order #1234', description: 'Placed by John Doe', time: '5m ago' },
-    { id: 2, icon: <PackageCheck size={14} />, title: 'Low Stock Alert', description: '5 products below threshold', time: '10m ago' },
-    { id: 3, icon: <MessageCircle size={14} />, title: 'Customer Inquiry', description: 'Jane Smith asked about returns', time: '15m ago' },
-  ]);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -46,12 +39,11 @@ const Layout = () => {
       if (savedTheme) {
         setIsDarkMode(savedTheme === 'dark');
       } else {
-        // If no saved theme, default to dark mode
-        localStorage.setItem('theme', 'dark');
+        localStorage.setItem('theme', 'light');
       }
     } catch (e) {
       console.warn('localStorage is not available:', e);
-      setIsDarkMode(true); // Fallback to dark mode
+      setIsDarkMode(false);
     }
   }, []);
 
@@ -94,22 +86,10 @@ const Layout = () => {
     const pathToMenu = {
       '/': 'Dashboard',
       '/orders': 'Orders',
-      '/orders/pending': 'Orders',
-      '/orders/completed': 'Orders',
-      '/orders/cancelled': 'Orders',
       '/products': 'Products',
       '/add-product': 'Products',
-      '/products/categories': 'Products',
       '/customers': 'Customers',
-      '/customers/groups': 'Customers',
-      '/messages': 'Messages',
-      '/messages/inbox': 'Messages',
-      '/messages/sent': 'Messages',
       '/settings': 'Settings',
-      '/settings/general': 'Settings',
-      '/settings/security': 'Settings',
-      '/settings/notifications': 'Settings',
-      '/profile': 'Profile',
     };
     const currentMenu = pathToMenu[location.pathname] || 'Dashboard';
     setActiveMenu(currentMenu);
@@ -117,14 +97,13 @@ const Layout = () => {
 
   const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
   const toggleDarkMode = () => setIsDarkMode(!isDarkMode);
-  const toggleNotifications = () => setShowNotifications(!showNotifications);
   const toggleProfileMenu = () => setShowProfileMenu(!showProfileMenu);
 
   const handleSearch = (e) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
 
-    // Mock search logic (replace with real API call in production)
+    // Mock search logic
     const searchResults = {
       products: ['Mens T-Shirt', 'Womens Jacket'].filter(item => item.toLowerCase().includes(searchQuery.toLowerCase())),
       orders: ['Order #1234', 'Order #5678'].filter(item => item.toLowerCase().includes(searchQuery.toLowerCase())),
@@ -143,62 +122,12 @@ const Layout = () => {
     if (window.innerWidth < 1024) setIsSidebarOpen(false);
   };
 
-  const dismissNotification = (id) => {
-    setNotifications(notifications.filter((notification) => notification.id !== id));
-  };
-
   const menuItems = [
-    { icon: <LayoutGrid size={18} />, label: 'Dashboard', path: '/', subItems: [] },
-    {
-      icon: <ShoppingCart size={18} />,
-      label: 'Orders',
-      path: '/orders',
-      badge: 5,
-      subItems: [
-        { label: 'Pending', path: '/orders/pending' },
-        { label: 'Completed', path: '/orders/completed' },
-        { label: 'Cancelled', path: '/orders/cancelled' },
-      ],
-    },
-    {
-      icon: <PackageCheck size={18} />,
-      label: 'Products',
-      path: '/products',
-      subItems: [
-        { label: 'All Products', path: '/products' },
-        { label: 'Add Product', path: '/add-product' },
-        { label: 'Categories', path: '/products/categories' },
-      ],
-    },
-    {
-      icon: <Users size={18} />,
-      label: 'Customers',
-      path: '/customers',
-      subItems: [
-        { label: 'All Customers', path: '/customers' },
-        { label: 'Groups', path: '/customers/groups' },
-      ],
-    },
-    {
-      icon: <MessageCircle size={18} />,
-      label: 'Messages',
-      path: '/messages',
-      badge: 12,
-      subItems: [
-        { label: 'Inbox', path: '/messages/inbox' },
-        { label: 'Sent', path: '/messages/sent' },
-      ],
-    },
-    {
-      icon: <Settings size={18} />,
-      label: 'Settings',
-      path: '/settings',
-      subItems: [
-        { label: 'General', path: '/settings/general' },
-        { label: 'Security', path: '/settings/security' },
-        { label: 'Notifications', path: '/settings/notifications' },
-      ],
-    },
+    { icon: <LayoutGrid size={18} />, label: 'Dashboard', path: '/' },
+    { icon: <ShoppingCart size={18} />, label: 'Orders', path: '/orders', badge: 5 },
+    { icon: <PackageCheck size={18} />, label: 'Products', path: '/products' },
+    { icon: <Users size={18} />, label: 'Customers', path: '/customers' },
+    { icon: <Settings size={18} />, label: 'Settings', path: '/settings' },
   ];
 
   const handleMenuItemClick = (path, label) => {
@@ -209,100 +138,38 @@ const Layout = () => {
     }
   };
 
-  const SidebarItem = ({ icon, label, badge, subItems, active, path }) => {
-    const [isOpen, setIsOpen] = useState(false);
-
-    const handleClick = (subItemPath) => {
-      if (subItems.length > 0 && !subItemPath) {
-        setIsOpen(!isOpen);
-      } else {
-        handleMenuItemClick(subItemPath || path, label);
-      }
-    };
-
+  const SidebarItem = ({ icon, label, badge, active, path }) => {
     return (
-      <div>
-        <motion.div
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-          className={`relative flex items-center justify-between p-3 rounded-xl cursor-pointer transition-colors ${
-            active
-              ? 'bg-blue-100/80 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
-              : 'text-gray-600 dark:text-gray-200 hover:bg-gray-100/80 dark:hover:bg-gray-700/80'
-          }`}
-          onClick={() => handleClick()}
-          role="button"
-          aria-expanded={isOpen}
-          aria-label={`Navigate to ${label}`}
-        >
-          <div className="flex items-center space-x-3">
-            <span className={active ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-300'}>{icon}</span>
-            <motion.span
-              animate={{ opacity: isSidebarOpen ? 1 : 0 }}
-              transition={{ duration: 0.2 }}
-              className="font-semibold text-sm"
-            >
-              {label}
-            </motion.span>
-          </div>
-          {badge && isSidebarOpen && (
-            <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">
-              {badge}
-            </span>
-          )}
-          {subItems.length > 0 && isSidebarOpen && (
-            <ChevronDown size={16} className={`text-gray-400 dark:text-gray-300 ${isOpen ? 'rotate-180' : ''} transition-transform`} />
-          )}
-        </motion.div>
-        <AnimatePresence>
-          {isOpen && isSidebarOpen && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="ml-8 space-y-1"
-            >
-              {subItems.map((subItem) => (
-                <motion.div
-                  key={subItem.label}
-                  whileHover={{ x: 5 }}
-                  className="p-2 text-sm text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg cursor-pointer"
-                  onClick={() => handleClick(subItem.path)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => e.key === 'Enter' && handleClick(subItem.path)}
-                >
-                  {subItem.label}
-                </motion.div>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+      <motion.div
+        whileHover={{ scale: 1.02 }}
+        whileTap={{ scale: 0.98 }}
+        className={`relative flex items-center justify-between p-3 rounded-xl cursor-pointer transition-colors ${
+          active
+            ? 'bg-blue-100/80 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+            : 'text-gray-600 dark:text-gray-200 hover:bg-gray-100/80 dark:hover:bg-gray-700/80'
+        }`}
+        onClick={() => handleMenuItemClick(path, label)}
+        role="button"
+        aria-label={`Navigate to ${label}`}
+      >
+        <div className="flex items-center space-x-3">
+          <span className={active ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-300'}>{icon}</span>
+          <motion.span
+            animate={{ opacity: isSidebarOpen ? 1 : 0 }}
+            transition={{ duration: 0.2 }}
+            className="font-semibold text-sm"
+          >
+            {label}
+          </motion.span>
+        </div>
+        {badge && isSidebarOpen && (
+          <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">
+            {badge}
+          </span>
+        )}
+      </motion.div>
     );
   };
-
-  const NotificationItem = ({ id, icon, title, description, time }) => (
-    <motion.div
-      whileHover={{ backgroundColor: isDarkMode ? '#4b5563' : '#f3f4f6' }}
-      className={`flex items-start p-2 rounded-lg ${isDarkMode ? 'bg-gray-700/50' : 'bg-gray-50'}`}
-    >
-      <span className="text-blue-500 dark:text-blue-400 mr-2">{icon}</span>
-      <div className="flex-1">
-        <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{title}</p>
-        <p className="text-xs text-gray-500 dark:text-gray-400">{description}</p>
-        <p className="text-xs text-gray-400 dark:text-gray-500">{time}</p>
-      </div>
-      <button
-        className="text-gray-400 hover:text-red-500 dark:hover:text-red-400 text-xs"
-        onClick={() => dismissNotification(id)}
-        aria-label={`Dismiss notification: ${title}`}
-      >
-        Dismiss
-      </button>
-    </motion.div>
-  );
 
   return (
     <div className={`flex h-screen ${isDarkMode ? 'dark bg-gradient-to-br from-gray-900 to-gray-800' : 'bg-gradient-to-br from-gray-50 to-gray-100'} font-sans transition-colors duration-500 overflow-hidden`}>
@@ -336,7 +203,6 @@ const Layout = () => {
               icon={item.icon}
               label={item.label}
               badge={item.badge}
-              subItems={item.subItems}
               active={activeMenu === item.label}
               path={item.path}
             />
@@ -372,13 +238,6 @@ const Layout = () => {
                 transition={{ duration: 0.2 }}
                 className="mt-2 bg-gray-50 dark:bg-gray-700/80 rounded-xl shadow-lg p-2"
               >
-                <button
-                  onClick={() => navigate('/profile')}
-                  className="flex items-center w-full p-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg"
-                  aria-label="View profile"
-                >
-                  <User size={16} className="mr-2" /> Profile
-                </button>
                 <button
                   onClick={() => navigate('/settings')}
                   className="flex items-center w-full p-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg"
@@ -438,49 +297,14 @@ const Layout = () => {
             <div className="relative">
               <motion.button
                 whileHover={{ scale: 1.1 }}
-                onClick={toggleNotifications}
                 className="relative p-2 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                 aria-label="Notifications"
               >
                 <Bell size={18} />
-                {notifications.length > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-4 w-4 sm:h-5 sm:w-5 flex items-center justify-center">
-                    {notifications.length}
-                  </span>
-                )}
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-4 w-4 sm:h-5 sm:w-5 flex items-center justify-center">
+                  2
+                </span>
               </motion.button>
-              <AnimatePresence>
-                {showNotifications && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.2 }}
-                    className="absolute right-0 mt-2 w-72 sm:w-80 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md shadow-xl rounded-xl p-4 z-20"
-                  >
-                    <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-3">Notifications</h3>
-                    <div className="space-y-3">
-                      {notifications.length === 0 ? (
-                        <p className="text-sm text-gray-500 dark:text-gray-400">No new notifications</p>
-                      ) : (
-                        notifications.map((notification) => (
-                          <NotificationItem
-                            key={notification.id}
-                            id={notification.id}
-                            icon={notification.icon}
-                            title={notification.title}
-                            description={notification.description}
-                            time={notification.time}
-                          />
-                        ))
-                      )}
-                    </div>
-                    <button className="mt-3 w-full text-sm text-blue-600 dark:text-blue-400 hover:underline">
-                      View All Notifications
-                    </button>
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </div>
             <div className="hidden sm:flex items-center space-x-2">
               <img
@@ -507,22 +331,10 @@ const Layout = () => {
             <Routes>
               <Route path="/" element={<Dashboard isDarkMode={isDarkMode} />} />
               <Route path="/orders" element={<OrdersPage isDarkMode={isDarkMode} />} />
-              <Route path="/orders/pending" element={<OrdersPage isDarkMode={isDarkMode} filter="pending" />} />
-              <Route path="/orders/completed" element={<OrdersPage isDarkMode={isDarkMode} filter="completed" />} />
-              <Route path="/orders/cancelled" element={<OrdersPage isDarkMode={isDarkMode} filter="cancelled" />} />
               <Route path="/products" element={<ProductsTable isDarkMode={isDarkMode} />} />
               <Route path="/add-product" element={<AddProductPage isDarkMode={isDarkMode} />} />
-              <Route path="/products/categories" element={<ProductsTable isDarkMode={isDarkMode} filter="categories" />} />
               <Route path="/customers" element={<CustomersPage isDarkMode={isDarkMode} />} />
-              <Route path="/customers/groups" element={<CustomersPage isDarkMode={isDarkMode} filter="groups" />} />
-              <Route path="/messages" element={<div className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}>Messages Page (Placeholder)</div>} />
-              <Route path="/messages/inbox" element={<div className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}>Inbox Page (Placeholder)</div>} />
-              <Route path="/messages/sent" element={<div className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}>Sent Page (Placeholder)</div>} />
-              <Route path="/settings" element={<div className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}>Settings Page (Placeholder)</div>} />
-              <Route path="/settings/general" element={<div className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}>General Settings (Placeholder)</div>} />
-              <Route path="/settings/security" element={<div className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}>Security Settings (Placeholder)</div>} />
-              <Route path="/settings/notifications" element={<div className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}>Notifications Settings (Placeholder)</div>} />
-              <Route path="/profile" element={<div className={isDarkMode ? 'text-gray-100' : 'text-gray-900'}>Profile Page (Placeholder)</div>} />
+              <Route path="/settings" element={<SellerSettingsPage isDarkMode={isDarkMode} />} />
             </Routes>
           </motion.div>
         </main>
