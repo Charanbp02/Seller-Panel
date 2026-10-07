@@ -1,5 +1,15 @@
 {
   "projects": {
-    "default": "trendzone-seller-panel"
-  }
+    "default": "racharuchiwebsite"
+  },
+  "targets": {
+    "racharuchiwebsite": {
+      "hosting": {
+        "admin": [
+          "racharuchi-admin"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

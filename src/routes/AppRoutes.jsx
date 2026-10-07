@@ -1,86 +1,227 @@
+// src/routes/AppRoutes.jsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Layout from "../components/Layout/Layout";
-import Dashboard from "../Pages/Dashboard/Dashboard";
-import OrdersPage from "../Pages/Orders/Orders";
-import ProductsTable from "../Pages/Products/Products";
-import AddProductPage from "../Pages/AddProductPage/AddProductPage";
-import CustomersPage from "../Pages/Customers/Customers";
-import SellerSettingsPage from "../Pages/Settings/Settings";
-import Signup from "../Features/Auth/Signup page/Signup page";
+import ProtectedRoute from "../components/Auth/ProtectedRoute";
 
-const PrivateRoute = ({ children }) => {
-  const isLoggedIn = localStorage.getItem("sellerToken"); // example check
-  return isLoggedIn ? children : <Navigate to="/" replace />;
-};
+// Pages
+import Login from "../Pages/Login/Login";
+import Dashboard from "../Pages/Dashboard/Dashboard";
+import DailySales from "../Pages/DailySales/DailySales";
+import Production from "../Pages/Production/Production";
+import Ingredients from "../Pages/Ingredients/Ingredients";
+import PackingMaterials from "../Pages/PackingMaterials/PackingMaterials";
+import Cashbook from "../Pages/Cashbook/Cashbook";
+import Expenses from "../Pages/Expenses/Expenses";
+import Investments from "../Pages/Investments/Investments";
+import AssetsPurchase from "../Pages/AssetsPurchase/AssetsPurchase";
+import Customers from "../Pages/Customers/Customers";
+import Reports from "../Pages/Reports/Reports";
+import Excel from "../Pages/Excel/Excel";
+import Alerts from "../Pages/Alerts/Alerts";
+import AuditHistory from "../Pages/AuditHistory/AuditHistory";
+import Settings from "../Pages/Settings/Settings";
+import ProductCosting from "../Pages/ProductCosting/ProductCosting";
+
+// Fallback/Placeholder pages
+const PlaceholderPage = ({ title }) => (
+  <div className="flex items-center justify-center h-96 bg-white rounded-2xl shadow-sm border border-gray-100">
+    <div className="text-center">
+      <div className="text-6xl mb-4">🚧</div>
+      <h2 className="text-2xl font-semibold text-gray-700">{title}</h2>
+      <p className="text-gray-500 mt-2">This page is under construction</p>
+    </div>
+  </div>
+);
 
 const AppRoutes = () => {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public Route */}
-        <Route path="/" element={<Signup />} />
+        {/* Public Route - Login */}
+        <Route path="/login" element={<Login />} />
 
-        {/* Protected Seller Routes */}
+        {/* Root - Redirect to Dashboard */}
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+
+        {/* Protected Routes - All pages wrapped with ProtectedRoute */}
         <Route
           path="/dashboard"
           element={
-            <PrivateRoute>
+            <ProtectedRoute>
               <Layout>
                 <Dashboard />
               </Layout>
-            </PrivateRoute>
+            </ProtectedRoute>
           }
         />
+
         <Route
-          path="/orders"
+          path="/daily-sales"
           element={
-            <PrivateRoute>
+            <ProtectedRoute>
               <Layout>
-                <OrdersPage />
+                <DailySales />
               </Layout>
-            </PrivateRoute>
+            </ProtectedRoute>
           }
         />
+
         <Route
-          path="/products"
+          path="/production"
           element={
-            <PrivateRoute>
+            <ProtectedRoute>
               <Layout>
-                <ProductsTable />
+                <Production />
               </Layout>
-            </PrivateRoute>
+            </ProtectedRoute>
           }
         />
+
         <Route
-          path="/add-product"
+          path="/product-costing"
           element={
-            <PrivateRoute>
+            <ProtectedRoute>
               <Layout>
-                <AddProductPage />
+                <ProductCosting />
               </Layout>
-            </PrivateRoute>
+            </ProtectedRoute>
           }
         />
+
+        <Route
+          path="/ingredients"  
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Ingredients />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/packing-materials"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <PackingMaterials />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/cashbook"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Cashbook />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/expenses"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Expenses />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/investments"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Investments />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/assets-purchase"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <AssetsPurchase />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
         <Route
           path="/customers"
           element={
-            <PrivateRoute>
+            <ProtectedRoute>
               <Layout>
-                <CustomersPage />
+                <Customers />
               </Layout>
-            </PrivateRoute>
+            </ProtectedRoute>
           }
         />
+
+        <Route
+          path="/reports"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Reports />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/excel"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Excel />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/alerts"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Alerts />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/audit-history"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <AuditHistory />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
         <Route
           path="/settings"
           element={
-            <PrivateRoute>
+            <ProtectedRoute>
               <Layout>
-                <SellerSettingsPage />
+                <Settings />
               </Layout>
-            </PrivateRoute>
+            </ProtectedRoute>
           }
         />
+
+        {/* Catch-all - Redirect to dashboard */}
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </BrowserRouter>
   );

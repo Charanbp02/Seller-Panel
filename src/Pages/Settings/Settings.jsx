@@ -1,1179 +1,1209 @@
-import React, { useMemo, useState, useEffect, useCallback } from "react";
+// Pages/Settings/Settings.jsx
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
-  User,
+  Settings as SettingsIcon,
   Store,
-  KeyRound,
-  Bell,
+  Package,
+  Ruler,
+  Tag,
   CreditCard,
-  Truck,
-  Calculator,
-  Code2,
-  AlertTriangle,
+  Wallet,
+  Users,
+  Database,
+  FileSpreadsheet,
   Save,
-  Undo2,
-  ChevronRight,
-  Check,
+  RefreshCw,
+  Edit,
+  Trash2,
+  Plus,
   X,
-} from "lucide-react";
+  Check,
+  AlertCircle,
+  Shield,
+  UserPlus,
+  UserMinus,
+  Key,
+  Mail,
+  Phone,
+  MapPin,
+  Building2,
+  DollarSign,
+  Percent,
+  Box,
+  Carrot,
+  ShoppingBag,
+  Truck,
+  Factory,
+  BarChart3,
+  Download,
+  Upload,
+  HardDrive,
+  Clock,
+  Globe,
+  Lock,
+  Unlock,
+  Eye,
+  EyeOff,
+  ChevronDown,
+  ChevronRight,
+  Search,
+  Filter,
+  Printer,
+  Calendar,
+  FileText,
+  User,
+  Ruler as RulerIcon
+} from 'lucide-react';
+import { db } from '../../firebase/firebaseConfig';
+import { 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  query, 
+  orderBy, 
+  onSnapshot,
+  getDocs,
+  where,
+  serverTimestamp,
+  writeBatch
+} from 'firebase/firestore';
 
-// Custom hook for stable input handling
-const useFormField = (initialValue) => {
-  const [value, setValue] = useState(initialValue);
-  const onChange = useCallback((e) => setValue(e.target.value), []);
-  return [value, onChange, setValue];
-};
+const SettingsPage = () => {
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState('business');
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [editingSection, setEditingSection] = useState(null);
 
-// Custom hook for password strength
-const usePasswordStrength = (password) => {
-  const [strength, setStrength] = useState(0);
-  const [criteria, setCriteria] = useState({
-    length: false,
-    uppercase: false,
-    lowercase: false,
-    number: false,
-    special: false,
+  // Business Details
+  const [businessDetails, setBusinessDetails] = useState({
+    name: 'Racha Ruchi',
+    owner: 'Rakshitha',
+    email: 'racharuchi@email.com',
+    phone: '9876543210',
+    address: 'M.G. Road, Bangalore - 560001',
+    gst: 'GSTIN123456789',
+    pan: 'ABCDE1234F',
+    fssai: 'FSSAI123456',
+    website: 'www.racharuchi.com',
+    currency: '₹',
+    timezone: 'Asia/Kolkata',
+    dateFormat: 'DD/MM/YYYY',
+    businessType: 'Food Manufacturing & Retail'
   });
 
+  // Collections Data
+  const [products, setProducts] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [paymentModes, setPaymentModes] = useState([]);
+  const [expenseCategories, setExpenseCategories] = useState([]);
+  const [users, setUsers] = useState([]);
+
+  // Backup Settings
+  const [backupSettings, setBackupSettings] = useState({
+    autoBackup: true,
+    backupFrequency: 'daily',
+    backupTime: '23:00',
+    backupLocation: 'cloud',
+    retentionDays: 30,
+    lastBackup: '2026-09-07 11:00 PM',
+    backupSize: '45.2 MB',
+    includeImages: true
+  });
+
+  // Excel Settings
+  const [excelSettings, setExcelSettings] = useState({
+    defaultExportFormat: 'xlsx',
+    includeHeaders: true,
+    includeImages: false,
+    dateFormat: 'DD/MM/YYYY',
+    numberFormat: 'currency',
+    autoExport: false,
+    exportTime: '18:00',
+    emailReports: false,
+    emailRecipients: 'racharuchi@email.com'
+  });
+
+  // Fetch business details from Firebase
   useEffect(() => {
-    const criteria = {
-      length: password.length >= 8,
-      uppercase: /[A-Z]/.test(password),
-      lowercase: /[a-z]/.test(password),
-      number: /[0-9]/.test(password),
-      special: /[^A-Za-z0-9]/.test(password),
-    };
-    setCriteria(criteria);
-    setStrength(Object.values(criteria).filter(Boolean).length);
-  }, [password]);
-
-  return { strength, criteria };
-};
-
-// Default state objects
-const defaultProfile = { ownerName: "", email: "", phone: "", avatarUrl: "" };
-const defaultStore = {
-  storeName: "",
-  slug: "",
-  description: "",
-  supportEmail: "",
-  supportPhone: "",
-  address: { line1: "", line2: "", city: "", state: "", country: "India", zip: "" },
-};
-const defaultSecurity = {
-  currentPassword: "",
-  newPassword: "",
-  confirmNewPassword: "",
-  twoFA: false,
-  loginAlerts: true,
-};
-const defaultNotify = { orderUpdates: true, lowStock: true, weeklyDigest: false, marketing: false };
-const defaultPayments = {
-  payoutMethod: "bank",
-  accountHolder: "",
-  accountNumber: "",
-  ifsc: "",
-  upiId: "",
-  gstin: "",
-};
-const defaultShipping = { shipFromZip: "", defaultCourier: "", freeShippingMin: "", returnWindowDays: 7 };
-const defaultTax = { gstEnabled: true, gstPercent: 18, pan: "", businessType: "individual" };
-const defaultApi = { publicKey: "", secretKey: "", webhookUrl: "", sandbox: true };
-const defaultErrors = {
-  profile: {},
-  store: {},
-  security: {},
-  payments: {},
-};
-
-export default function SellerSettingsPage({ isDarkMode = false }) {
-  const [active, setActive] = useState("profile");
-  const [profile, setProfile] = useState(defaultProfile);
-  const [store, setStore] = useState(defaultStore);
-  const [security, setSecurity] = useState(defaultSecurity);
-  const [notify, setNotify] = useState(defaultNotify);
-  const [payments, setPayments] = useState(defaultPayments);
-  const [shipping, setShipping] = useState(defaultShipping);
-  const [tax, setTax] = useState(defaultTax);
-  const [api, setApi] = useState(defaultApi);
-  const [errors, setErrors] = useState(defaultErrors);
-  const [saving, setSaving] = useState(false);
-  const [toast, setToast] = useState({ show: false, message: "", type: "" });
-  const [deleteConfirm, setDeleteConfirm] = useState("");
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-
-  // Load from localStorage
-  useEffect(() => {
-    if (typeof window !== "undefined" && window.localStorage) {
+    const fetchBusinessDetails = async () => {
       try {
-        const savedSettings = JSON.parse(localStorage.getItem("sellerSettings") || "{}");
-        setProfile(savedSettings.profile || defaultProfile);
-        setStore(savedSettings.store || defaultStore);
-        setSecurity(savedSettings.security || defaultSecurity);
-        setNotify(savedSettings.notify || defaultNotify);
-        setPayments(savedSettings.payments || defaultPayments);
-        setShipping(savedSettings.shipping || defaultShipping);
-        setTax(savedSettings.tax || defaultTax);
-        setApi(savedSettings.api || defaultApi);
+        const businessQuery = query(collection(db, 'settings'), where('type', '==', 'business'));
+        const snapshot = await getDocs(businessQuery);
+        if (!snapshot.empty) {
+          const data = snapshot.docs[0].data();
+          setBusinessDetails({
+            name: data.name || 'Racha Ruchi',
+            owner: data.owner || 'Rakshitha',
+            email: data.email || 'racharuchi@email.com',
+            phone: data.phone || '9876543210',
+            address: data.address || 'M.G. Road, Bangalore - 560001',
+            gst: data.gst || 'GSTIN123456789',
+            pan: data.pan || 'ABCDE1234F',
+            fssai: data.fssai || 'FSSAI123456',
+            website: data.website || 'www.racharuchi.com',
+            currency: data.currency || '₹',
+            timezone: data.timezone || 'Asia/Kolkata',
+            dateFormat: data.dateFormat || 'DD/MM/YYYY',
+            businessType: data.businessType || 'Food Manufacturing & Retail'
+          });
+        }
       } catch (error) {
-        console.error("Failed to load settings:", error);
-        setToast({ show: true, message: "Failed to load settings", type: "error" });
+        console.error('Error fetching business details:', error);
       }
-    }
+    };
+    fetchBusinessDetails();
   }, []);
 
-  const saveToLocalStorage = useCallback(() => {
-    if (typeof window !== "undefined" && window.localStorage) {
-      try {
-        const settings = {
-          profile,
-          store,
-          security: { ...security, currentPassword: "", newPassword: "", confirmNewPassword: "" },
-          notify,
-          payments,
-          shipping,
-          tax,
-          api,
-        };
-        localStorage.setItem("sellerSettings", JSON.stringify(settings));
-      } catch (error) {
-        console.error("Failed to save settings:", error);
-        setToast({ show: true, message: "Failed to save settings", type: "error" });
-      }
-    }
-  }, [profile, store, security, notify, payments, shipping, tax, api]);
-
-  const showToast = useCallback((message, type = "success") => {
-    setToast({ show: true, message, type });
-    setTimeout(() => setToast((prev) => ({ ...prev, show: false })), 3000);
+  // Fetch products from Firebase
+  useEffect(() => {
+    const q = query(collection(db, 'products'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = [];
+      snapshot.forEach((doc) => {
+        items.push({ id: doc.id, ...doc.data() });
+      });
+      setProducts(items);
+      setLoading(false);
+    }, (error) => {
+      console.error('Error fetching products:', error);
+      setLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
 
-  const fakeSave = useCallback(
-    (section, payload) => {
-      setSaving(true);
-      setTimeout(() => {
-        setSaving(false);
-        saveToLocalStorage();
-        showToast(`${section} settings saved successfully`, "success");
-        console.log(`Saved ${section}:`, payload);
-      }, 1000);
-    },
-    [saveToLocalStorage, showToast]
-  );
+  // Fetch units from Firebase
+  useEffect(() => {
+    const q = query(collection(db, 'units'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = [];
+      snapshot.forEach((doc) => {
+        items.push({ id: doc.id, ...doc.data() });
+      });
+      setUnits(items);
+    }, (error) => {
+      console.error('Error fetching units:', error);
+    });
+    return () => unsubscribe();
+  }, []);
 
-  const nav = useMemo(
-    () => [
-      { id: "profile", label: "Profile", icon: User },
-      { id: "store", label: "Store", icon: Store },
-      { id: "security", label: "Security", icon: KeyRound },
-      { id: "notifications", label: "Notifications", icon: Bell },
-      { id: "payments", label: "Payments", icon: CreditCard },
-      { id: "shipping", label: "Shipping", icon: Truck },
-      { id: "tax", label: "Tax", icon: Calculator },
-      { id: "api", label: "API", icon: Code2 },
-      { id: "danger", label: "Danger Zone", icon: AlertTriangle },
-    ],
-    []
-  );
+  // Fetch categories from Firebase
+  useEffect(() => {
+    const q = query(collection(db, 'categories'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = [];
+      snapshot.forEach((doc) => {
+        items.push({ id: doc.id, ...doc.data() });
+      });
+      setCategories(items);
+    }, (error) => {
+      console.error('Error fetching categories:', error);
+    });
+    return () => unsubscribe();
+  }, []);
 
-  // Component definitions
-  function SectionContainer({ title, description, children, className = "" }) {
-    return (
-      <section
-        className={`rounded-lg border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800 ${className}`}
-      >
-        <div className="mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white">{title}</h2>
-          {description && (
-            <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">{description}</p>
-          )}
-        </div>
-        {children}
-      </section>
-    );
-  }
+  // Fetch payment modes from Firebase
+  useEffect(() => {
+    const q = query(collection(db, 'paymentModes'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = [];
+      snapshot.forEach((doc) => {
+        items.push({ id: doc.id, ...doc.data() });
+      });
+      setPaymentModes(items);
+    }, (error) => {
+      console.error('Error fetching payment modes:', error);
+    });
+    return () => unsubscribe();
+  }, []);
 
-  function Field({ label, hint, required, error, children, id, className = "" }) {
-    return (
-      <label className={`block space-y-2 ${className}`} htmlFor={id}>
-        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-          {label} {required && <span className="text-red-500">*</span>}
-        </span>
-        {children}
-        {(hint || error) && (
-          <span
-            id={`${id}-description`}
-            className={`text-xs ${error ? "text-red-600 dark:text-red-400" : "text-gray-500 dark:text-gray-400"}`}
-          >
-            {error || hint}
-          </span>
-        )}
-      </label>
-    );
-  }
+  // Fetch expense categories from Firebase
+  useEffect(() => {
+    const q = query(collection(db, 'expenseCategories'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = [];
+      snapshot.forEach((doc) => {
+        items.push({ id: doc.id, ...doc.data() });
+      });
+      setExpenseCategories(items);
+    }, (error) => {
+      console.error('Error fetching expense categories:', error);
+    });
+    return () => unsubscribe();
+  }, []);
 
-  function Input({ id, value, onChange, className = "", disabled, type = "text", ...props }) {
-    return (
-      <input
-        id={id}
-        type={type}
-        value={value}
-        onChange={onChange}
-        disabled={disabled}
-        className={`block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 disabled:bg-gray-100 disabled:dark:bg-gray-600 disabled:cursor-not-allowed ${className}`}
-        aria-invalid={!!props["aria-invalid"]}
-        aria-describedby={`${id}-description`}
-        {...props}
-      />
-    );
-  }
+  // Fetch users from Firebase
+  useEffect(() => {
+    const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = [];
+      snapshot.forEach((doc) => {
+        items.push({ id: doc.id, ...doc.data() });
+      });
+      setUsers(items);
+    }, (error) => {
+      console.error('Error fetching users:', error);
+    });
+    return () => unsubscribe();
+  }, []);
 
-  function Textarea({ id, value, onChange, className = "", disabled, ...props }) {
-    return (
-      <textarea
-        id={id}
-        value={value}
-        onChange={onChange}
-        disabled={disabled}
-        className={`block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400 disabled:bg-gray-100 disabled:dark:bg-gray-600 disabled:cursor-not-allowed ${className}`}
-        aria-describedby={`${id}-description`}
-        {...props}
-      />
-    );
-  }
+  // Save Business Details
+  const handleBusinessSave = async () => {
+    setIsSaving(true);
+    try {
+      const businessQuery = query(collection(db, 'settings'), where('type', '==', 'business'));
+      const snapshot = await getDocs(businessQuery);
+      
+      const businessData = {
+        type: 'business',
+        ...businessDetails,
+        updatedAt: new Date().toISOString()
+      };
 
-  function Toggle({ checked, onChange, id, label }) {
-    return (
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        id={id}
-        onClick={() => onChange(!checked)}
-        onKeyDown={(e) => e.key === "Enter" && onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-          checked ? "bg-blue-600" : "bg-gray-200 dark:bg-gray-600"
-        }`}
-      >
-        <span
-          className={`inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-            checked ? "translate-x-5" : "translate-x-0"
-          }`}
-        />
-      </button>
-    );
-  }
-
-  function Select({ id, value, onChange, children, className = "", disabled }) {
-    return (
-      <select
-        id={id}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled}
-        className={`block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:bg-gray-100 disabled:dark:bg-gray-600 disabled:cursor-not-allowed ${className}`}
-        aria-describedby={`${id}-description`}
-      >
-        {children}
-      </select>
-    );
-  }
-
-  function SectionActions({ onSave, onReset, saving }) {
-    return (
-      <div className="flex flex-col-reverse gap-3 border-t border-gray-200 pt-6 sm:flex-row sm:justify-end dark:border-gray-700">
-        <button
-          type="button"
-          onClick={onReset}
-          disabled={saving}
-          className="inline-flex items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600"
-        >
-          <Undo2 className="h-4 w-4" /> Reset
-        </button>
-        <button
-          type="submit"
-          disabled={saving}
-          className="inline-flex items-center justify-center gap-2 rounded-md border border-transparent bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50"
-        >
-          <Save className="h-4 w-4" /> {saving ? "Saving..." : "Save Changes"}
-        </button>
-      </div>
-    );
-  }
-
-  function PasswordStrengthMeter({ strength }) {
-    const strengthText = ["Very weak", "Weak", "Moderate", "Strong", "Very strong"][strength];
-    const strengthColor = [
-      "bg-red-500",
-      "bg-orange-500",
-      "bg-yellow-500",
-      "bg-blue-500",
-      "bg-green-500",
-    ][strength];
-
-    return (
-      <div className="mt-2">
-        <div className="flex items-center justify-between text-xs">
-          <span>Password strength:</span>
-          <span
-            className={`font-medium ${
-              strength <= 1 ? "text-red-500" : strength <= 2 ? "text-orange-500" : strength <= 3 ? "text-blue-500" : "text-green-500"
-            }`}
-          >
-            {strengthText}
-          </span>
-        </div>
-        <div className="mt-1 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600">
-          <div
-            className={`h-full rounded-full ${strengthColor}`}
-            style={{ width: `${(strength / 5) * 100}%` }}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  function PasswordCriteria({ criteria }) {
-    return (
-      <div className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-400">
-        <p className="font-medium">Password must contain:</p>
-        <ul className="space-y-1">
-          {[
-            { key: "length", text: "At least 8 characters" },
-            { key: "uppercase", text: "At least one uppercase letter" },
-            { key: "lowercase", text: "At least one lowercase letter" },
-            { key: "number", text: "At least one number" },
-            { key: "special", text: "At least one special character" },
-          ].map(({ key, text }) => (
-            <li
-              key={key}
-              className={`flex items-center ${criteria[key] ? "text-green-600 dark:text-green-400" : ""}`}
-            >
-              {criteria[key] ? <Check className="h-3 w-3 mr-1" /> : <X className="h-3 w-3 mr-1" />}
-              {text}
-            </li>
-          ))}
-        </ul>
-      </div>
-    );
-  }
-
-  // Validation functions
-  const validateProfile = useCallback(() => {
-    const newErrors = {};
-    if (!profile.ownerName.trim()) newErrors.ownerName = "Owner name is required";
-    if (!profile.email.match(/^[\w-]+@([\w-]+\.)+[\w-]{2,4}$/)) newErrors.email = "Invalid email format";
-    if (profile.phone && !profile.phone.match(/^\+?[\d\s-]{10,15}$/)) newErrors.phone = "Invalid phone format";
-    setErrors((prev) => ({ ...prev, profile: newErrors }));
-    return Object.keys(newErrors).length === 0;
-  }, [profile]);
-
-  const validateStore = useCallback(() => {
-    const newErrors = {};
-    if (!store.storeName.trim()) newErrors.storeName = "Store name is required";
-    if (!store.slug.trim()) newErrors.slug = "Store slug is required";
-    setErrors((prev) => ({ ...prev, store: newErrors }));
-    return Object.keys(newErrors).length === 0;
-  }, [store]);
-
-  const validateSecurity = useCallback(() => {
-    const newErrors = {};
-    if (!security.currentPassword) newErrors.currentPassword = "Current password is required";
-    if (security.newPassword && security.newPassword !== security.confirmNewPassword)
-      newErrors.confirmNewPassword = "Passwords do not match";
-    if (security.newPassword && passwordStrength < 4) newErrors.newPassword = "Password is too weak";
-    setErrors((prev) => ({ ...prev, security: newErrors }));
-    return Object.keys(newErrors).length === 0;
-  }, [security]);
-
-  const validatePayments = useCallback(() => {
-    const newErrors = {};
-    if (payments.payoutMethod === "bank") {
-      if (!payments.accountHolder.trim()) newErrors.accountHolder = "Account holder name is required";
-      if (!payments.accountNumber.trim()) newErrors.accountNumber = "Account number is required";
-      if (!payments.ifsc.trim()) newErrors.ifsc = "IFSC is required";
-    } else if (payments.payoutMethod === "upi") {
-      if (!payments.upiId.trim()) newErrors.upiId = "UPI ID is required";
+      if (!snapshot.empty) {
+        await updateDoc(doc(db, 'settings', snapshot.docs[0].id), businessData);
+      } else {
+        await addDoc(collection(db, 'settings'), {
+          ...businessData,
+          createdAt: new Date().toISOString()
+        });
+      }
+      
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (error) {
+      console.error('Error saving business details:', error);
+      alert('Failed to save business details. Please try again.');
+    } finally {
+      setIsSaving(false);
     }
-    setErrors((prev) => ({ ...prev, payments: newErrors }));
-    return Object.keys(newErrors).length === 0;
-  }, [payments]);
+  };
 
-  // Section components
-  function ProfileSection() {
-    const [ownerName, onOwnerNameChange] = useFormField(profile.ownerName);
-    const [email, onEmailChange] = useFormField(profile.email);
-    const [phone, onPhoneChange] = useFormField(profile.phone);
-    const [avatarUrl, onAvatarUrlChange] = useFormField(profile.avatarUrl);
+  // Add Product
+  const handleAddProduct = async (productData) => {
+    try {
+      await addDoc(collection(db, 'products'), {
+        ...productData,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      setShowAddModal(false);
+    } catch (error) {
+      console.error('Error adding product:', error);
+      alert('Failed to add product. Please try again.');
+    }
+  };
 
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      const updatedProfile = { ownerName, email, phone, avatarUrl };
-      setProfile(updatedProfile);
-      if (validateProfile()) fakeSave("profile", updatedProfile);
+  // Update Product
+  const handleUpdateProduct = async (id, productData) => {
+    try {
+      await updateDoc(doc(db, 'products', id), {
+        ...productData,
+        updatedAt: new Date().toISOString()
+      });
+      setShowEditModal(false);
+    } catch (error) {
+      console.error('Error updating product:', error);
+      alert('Failed to update product. Please try again.');
+    }
+  };
+
+  // Delete Product
+  const handleDeleteProduct = async (id) => {
+    try {
+      await deleteDoc(doc(db, 'products', id));
+      setShowDeleteModal(false);
+    } catch (error) {
+      console.error('Error deleting product:', error);
+      alert('Failed to delete product. Please try again.');
+    }
+  };
+
+  // Generic handlers
+  const handleAddItem = (section) => {
+    setEditingSection(section);
+    setShowAddModal(true);
+  };
+
+  const handleEditItem = (item) => {
+    setSelectedItem(item);
+    setShowEditModal(true);
+  };
+
+  const handleDeleteItem = (item) => {
+    setSelectedItem(item);
+    setShowDeleteModal(true);
+  };
+
+  const getRoleBadge = (role) => {
+    const configs = {
+      Admin: 'bg-red-50 text-red-700',
+      Manager: 'bg-blue-50 text-blue-700',
+      Staff: 'bg-green-50 text-green-700'
     };
+    return <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${configs[role] || configs.Staff}`}>{role}</span>;
+  };
 
-    return (
-      <form key="profile-form" onSubmit={handleSubmit}>
-        <SectionContainer title="Profile" description="Public-facing owner details. Used on invoices and support.">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <Field label="Owner name" required error={errors.profile?.ownerName} id="ownerName">
-              <Input
-                id="ownerName"
-                value={ownerName}
-                onChange={onOwnerNameChange}
-                placeholder="e.g., John Doe"
-                aria-invalid={!!errors.profile?.ownerName}
-              />
-            </Field>
-            <Field label="Email" required error={errors.profile?.email} id="email">
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={onEmailChange}
-                placeholder="owner@shop.com"
-                aria-invalid={!!errors.profile?.email}
-              />
-            </Field>
-            <Field label="Phone" error={errors.profile?.phone} id="phone">
-              <Input
-                id="phone"
-                value={phone}
-                onChange={onPhoneChange}
-                placeholder="+91 98xxxxxxx"
-                aria-invalid={!!errors.profile?.phone}
-              />
-            </Field>
-            <Field label="Avatar URL" hint="Square image ≥ 256px recommended" id="avatarUrl">
-              <Input
-                id="avatarUrl"
-                value={avatarUrl}
-                onChange={onAvatarUrlChange}
-                placeholder="https://..."
-              />
-            </Field>
-            {avatarUrl && (
-              <div className="sm:col-span-2 flex items-center justify-center">
-                <div className="relative h-32 w-32 overflow-hidden rounded-full border-2 border-gray-200 dark:border-gray-600">
-                  <img
-                    src={avatarUrl}
-                    alt="Avatar preview"
-                    className="h-full w-full object-cover"
-                    onError={(e) => (e.target.src = "")}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        </SectionContainer>
-        <SectionActions saving={saving} onReset={() => setProfile(defaultProfile)} onSave={handleSubmit} />
-      </form>
-    );
-  }
-
-  function StoreSection() {
-    const [storeName, onStoreNameChange] = useFormField(store.storeName);
-    const [slug, onSlugChange] = useFormField(store.slug);
-    const [description, onDescriptionChange] = useFormField(store.description);
-    const [supportEmail, onSupportEmailChange] = useFormField(store.supportEmail);
-    const [supportPhone, onSupportPhoneChange] = useFormField(store.supportPhone);
-    const [line1, onLine1Change] = useFormField(store.address.line1);
-    const [line2, onLine2Change] = useFormField(store.address.line2);
-    const [city, onCityChange] = useFormField(store.address.city);
-    const [state, onStateChange] = useFormField(store.address.state);
-    const [country, onCountryChange] = useFormField(store.address.country);
-    const [zip, onZipChange] = useFormField(store.address.zip);
-
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      const updatedStore = {
-        storeName,
-        slug,
-        description,
-        supportEmail,
-        supportPhone,
-        address: { line1, line2, city, state, country, zip },
-      };
-      setStore(updatedStore);
-      if (validateStore()) fakeSave("store", updatedStore);
+  const getStatusBadge = (status) => {
+    const configs = {
+      active: 'bg-green-50 text-green-700',
+      inactive: 'bg-gray-50 text-gray-700'
     };
+    return <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${configs[status] || configs.inactive}`}>{status}</span>;
+  };
 
-    return (
-      <form key="store-form" onSubmit={handleSubmit}>
-        <SectionContainer title="Store" description="Storefront and support information.">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <Field label="Store name" required error={errors.store?.storeName} id="storeName">
-              <Input
-                id="storeName"
-                value={storeName}
-                onChange={onStoreNameChange}
-                placeholder="TrendZone"
-                aria-invalid={!!errors.store?.storeName}
-              />
-            </Field>
-            <Field label="Store URL slug" hint="letters, numbers, hyphens" error={errors.store?.slug} id="slug">
-              <Input
-                id="slug"
-                value={slug}
-                onChange={(e) => onSlugChange({ target: { value: e.target.value.replace(/\s+/g, "-").toLowerCase() } })}
-                placeholder="trendzone"
-                aria-invalid={!!errors.store?.slug}
-              />
-            </Field>
-            <div className="sm:col-span-2">
-              <Field label="Description" id="description">
-                <Textarea
-                  id="description"
-                  rows={4}
-                  value={description}
-                  onChange={onDescriptionChange}
-                  placeholder="What do you sell? Policies, highlights, etc."
-                />
-              </Field>
-            </div>
-            <Field label="Support email" id="supportEmail">
-              <Input
-                id="supportEmail"
-                value={supportEmail}
-                onChange={onSupportEmailChange}
-                placeholder="support@trendzone.in"
-              />
-            </Field>
-            <Field label="Support phone" id="supportPhone">
-              <Input
-                id="supportPhone"
-                value={supportPhone}
-                onChange={onSupportPhoneChange}
-                placeholder="+91 9xxxxxxxxx"
-              />
-            </Field>
+  const renderTabContent = () => {
+    switch(activeTab) {
+      case 'business':
+        return renderBusinessTab();
+      case 'products':
+        return renderProductsTab();
+      case 'units':
+        return renderUnitsTab();
+      case 'categories':
+        return renderCategoriesTab();
+      case 'payment':
+        return renderPaymentTab();
+      case 'expenses':
+        return renderExpensesTab();
+      case 'users':
+        return renderUsersTab();
+      case 'backup':
+        return renderBackupTab();
+      case 'excel':
+        return renderExcelTab();
+      default:
+        return renderBusinessTab();
+    }
+  };
+
+  const renderBusinessTab = () => (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Business Details</h3>
+            <p className="text-sm text-gray-500">Manage your business information</p>
           </div>
-          <div className="mt-6 space-y-6 rounded-lg border border-gray-200 bg-gray-50 p-6 dark:border-gray-700 dark:bg-gray-700/30">
-            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">Pickup / Return Address</h3>
-            <div className="grid gap-6 sm:grid-cols-2">
-              <Field label="Address line 1" id="line1">
-                <Input id="line1" value={line1} onChange={onLine1Change} placeholder="Flat / House no., Building" />
-              </Field>
-              <Field label="Address line 2" id="line2">
-                <Input id="line2" value={line2} onChange={onLine2Change} placeholder="Street, Area" />
-              </Field>
-              <Field label="City" id="city">
-                <Input id="city" value={city} onChange={onCityChange} />
-              </Field>
-              <Field label="State" id="state">
-                <Input id="state" value={state} onChange={onStateChange} />
-              </Field>
-              <Field label="Country" id="country">
-                <Input id="country" value={country} onChange={onCountryChange} />
-              </Field>
-              <Field label="PIN / ZIP" id="zip">
-                <Input id="zip" value={zip} onChange={onZipChange} />
-              </Field>
-            </div>
-          </div>
-        </SectionContainer>
-        <SectionActions saving={saving} onReset={() => setStore(defaultStore)} onSave={handleSubmit} />
-      </form>
-    );
-  }
-
-  function SecuritySection() {
-    const [currentPassword, onCurrentPasswordChange] = useFormField(security.currentPassword);
-    const [newPassword, onNewPasswordChange] = useFormField(security.newPassword);
-    const [confirmNewPassword, onConfirmNewPasswordChange] = useFormField(security.confirmNewPassword);
-    const { strength, criteria } = usePasswordStrength(newPassword);
-
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      const updatedSecurity = {
-        ...security,
-        currentPassword,
-        newPassword,
-        confirmNewPassword,
-      };
-      setSecurity(updatedSecurity);
-      if (validateSecurity()) fakeSave("security", updatedSecurity);
-    };
-
-    return (
-      <form key="security-form" onSubmit={handleSubmit}>
-        <SectionContainer title="Security" description="Password & sign-in protection.">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <Field label="Current password" required error={errors.security?.currentPassword} id="currentPassword">
-              <Input
-                id="currentPassword"
-                type="password"
-                value={currentPassword}
-                onChange={onCurrentPasswordChange}
-                autoComplete="current-password"
-                aria-invalid={!!errors.security?.currentPassword}
-              />
-            </Field>
-            <div className="sm:col-span-2"></div>
-            <Field label="New password" required error={errors.security?.newPassword} id="newPassword">
-              <Input
-                id="newPassword"
-                type="password"
-                value={newPassword}
-                onChange={onNewPasswordChange}
-                autoComplete="new-password"
-                aria-invalid={!!errors.security?.newPassword}
-              />
-              {newPassword && (
-                <>
-                  <PasswordStrengthMeter strength={strength} />
-                  <PasswordCriteria criteria={criteria} />
-                </>
-              )}
-            </Field>
-            <Field
-              label="Confirm new password"
-              required
-              error={errors.security?.confirmNewPassword}
-              id="confirmNewPassword"
-            >
-              <Input
-                id="confirmNewPassword"
-                type="password"
-                value={confirmNewPassword}
-                onChange={onConfirmNewPasswordChange}
-                autoComplete="new-password"
-                aria-invalid={!!errors.security?.confirmNewPassword}
-              />
-            </Field>
-          </div>
-          <div className="mt-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <label htmlFor="twoFA" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Two-factor authentication
-                </label>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Adds an extra layer of security to your account
-                </p>
-              </div>
-              <Toggle
-                checked={security.twoFA}
-                onChange={(v) => setSecurity((prev) => ({ ...prev, twoFA: v }))}
-                id="twoFA"
-                label="Toggle two-factor authentication"
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <label
-                  htmlFor="loginAlerts"
-                  className="block text-sm font-medium text-gray-700 dark:text-gray-300"
-                >
-                  Login alerts
-                </label>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Get notified when someone logs in to your account
-                </p>
-              </div>
-              <Toggle
-                checked={security.loginAlerts}
-                onChange={(v) => setSecurity((prev) => ({ ...prev, loginAlerts: v }))}
-                id="loginAlerts"
-                label="Toggle login alerts"
-              />
-            </div>
-          </div>
-        </SectionContainer>
-        <SectionActions saving={saving} onReset={() => setSecurity(defaultSecurity)} onSave={handleSubmit} />
-      </form>
-    );
-  }
-
-  function NotificationsSection() {
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      fakeSave("notifications", notify);
-    };
-
-    return (
-      <form key="notifications-form" onSubmit={handleSubmit}>
-        <SectionContainer title="Notifications" description="Email & in-app alerts.">
-          <div className="space-y-4">
-            {[
-              { key: "orderUpdates", label: "Order updates", description: "Get notified when customers place new orders" },
-              { key: "lowStock", label: "Low stock warnings", description: "Receive alerts when inventory is running low" },
-              {
-                key: "weeklyDigest",
-                label: "Weekly performance digest",
-                description: "Weekly summary of your store's performance",
-              },
-              {
-                key: "marketing",
-                label: "Product & feature announcements",
-                description: "Updates about new features and promotions",
-              },
-            ].map((n) => (
-              <div key={n.key} className="flex items-center justify-between">
-                <div>
-                  <label htmlFor={n.key} className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                    {n.label}
-                  </label>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">{n.description}</p>
-                </div>
-                <Toggle
-                  checked={notify[n.key]}
-                  onChange={(v) => setNotify((prev) => ({ ...prev, [n.key]: v }))}
-                  id={n.key}
-                  label={`Toggle ${n.label}`}
-                />
-              </div>
-            ))}
-          </div>
-        </SectionContainer>
-        <SectionActions saving={saving} onReset={() => setNotify(defaultNotify)} onSave={handleSubmit} />
-      </form>
-    );
-  }
-
-  function PaymentsSection() {
-    const [payoutMethod, onPayoutMethodChange] = useFormField(payments.payoutMethod);
-    const [accountHolder, onAccountHolderChange] = useFormField(payments.accountHolder);
-    const [accountNumber, onAccountNumberChange] = useFormField(payments.accountNumber);
-    const [ifsc, onIfscChange] = useFormField(payments.ifsc);
-    const [upiId, onUpiIdChange] = useFormField(payments.upiId);
-    const [gstin, onGstinChange] = useFormField(payments.gstin);
-
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      const updatedPayments = { payoutMethod, accountHolder, accountNumber, ifsc, upiId, gstin };
-      setPayments(updatedPayments);
-      if (validatePayments()) fakeSave("payments", updatedPayments);
-    };
-
-    return (
-      <form key="payments-form" onSubmit={handleSubmit}>
-        <SectionContainer title="Payments & Payouts" description="Bank/UPI details for settlements.">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <Field label="Payout method" id="payoutMethod">
-              <Select id="payoutMethod" value={payoutMethod} onChange={onPayoutMethodChange}>
-                <option value="bank">Bank Transfer</option>
-                <option value="upi">UPI</option>
-              </Select>
-            </Field>
-            <Field label="GSTIN" hint="If registered for GST" id="gstin">
-              <Input
-                id="gstin"
-                value={gstin}
-                onChange={(e) => onGstinChange({ target: { value: e.target.value.toUpperCase() } })}
-                placeholder="22AAAAA0000A1Z5"
-              />
-            </Field>
-            {payoutMethod === "bank" ? (
+          <button
+            onClick={handleBusinessSave}
+            disabled={isSaving}
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            {isSaving ? (
               <>
-                <Field label="Account holder name" error={errors.payments?.accountHolder} id="accountHolder">
-                  <Input
-                    id="accountHolder"
-                    value={accountHolder}
-                    onChange={onAccountHolderChange}
-                    aria-invalid={!!errors.payments?.accountHolder}
-                  />
-                </Field>
-                <Field label="Account number" error={errors.payments?.accountNumber} id="accountNumber">
-                  <Input
-                    id="accountNumber"
-                    value={accountNumber}
-                    onChange={onAccountNumberChange}
-                    aria-invalid={!!errors.payments?.accountNumber}
-                  />
-                </Field>
-                <Field label="IFSC" error={errors.payments?.ifsc} id="ifsc">
-                  <Input
-                    id="ifsc"
-                    value={ifsc}
-                    onChange={(e) => onIfscChange({ target: { value: e.target.value.toUpperCase() } })}
-                    placeholder="HDFC0001234"
-                    aria-invalid={!!errors.payments?.ifsc}
-                  />
-                </Field>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                Saving...
               </>
             ) : (
-              <Field label="UPI ID" error={errors.payments?.upiId} id="upiId">
-                <Input
-                  id="upiId"
-                  value={upiId}
-                  onChange={onUpiIdChange}
-                  placeholder="name@bank"
-                  aria-invalid={!!errors.payments?.upiId}
-                />
-              </Field>
+              <>
+                <Save className="w-4 h-4" />
+                Save Changes
+              </>
             )}
+          </button>
+        </div>
+
+        {saveSuccess && (
+          <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center gap-2">
+            <Check className="w-5 h-5 text-green-600" />
+            <span className="text-green-700">Business details saved successfully!</span>
           </div>
-        </SectionContainer>
-        <SectionActions saving={saving} onReset={() => setPayments(defaultPayments)} onSave={handleSubmit} />
-      </form>
-    );
-  }
+        )}
 
-  function ShippingSection() {
-    const [shipFromZip, onShipFromZipChange] = useFormField(shipping.shipFromZip);
-    const [defaultCourier, onDefaultCourierChange] = useFormField(shipping.defaultCourier);
-    const [freeShippingMin, onFreeShippingMinChange] = useFormField(shipping.freeShippingMin);
-    const [returnWindowDays, onReturnWindowDaysChange] = useFormField(shipping.returnWindowDays);
-
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      const updatedShipping = {
-        shipFromZip,
-        defaultCourier,
-        freeShippingMin,
-        returnWindowDays: Number(returnWindowDays),
-      };
-      setShipping(updatedShipping);
-      fakeSave("shipping", updatedShipping);
-    };
-
-    return (
-      <form key="shipping-form" onSubmit={handleSubmit}>
-        <SectionContainer title="Shipping & Returns" description="Default shipping preferences and return policy.">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <Field label="Ship-from PIN / ZIP" id="shipFromZip">
-              <Input id="shipFromZip" value={shipFromZip} onChange={onShipFromZipChange} />
-            </Field>
-            <Field label="Preferred courier" id="defaultCourier">
-              <Input
-                id="defaultCourier"
-                value={defaultCourier}
-                onChange={onDefaultCourierChange}
-                placeholder="Delhivery / Bluedart / DTDC"
-              />
-            </Field>
-            <Field label="Free shipping minimum (₹)" id="freeShippingMin">
-              <Input
-                id="freeShippingMin"
-                type="number"
-                value={freeShippingMin}
-                onChange={onFreeShippingMinChange}
-                placeholder="999"
-              />
-            </Field>
-            <Field label="Return window (days)" id="returnWindowDays">
-              <Input
-                id="returnWindowDays"
-                type="number"
-                value={returnWindowDays}
-                onChange={onReturnWindowDaysChange}
-                placeholder="7"
-              />
-            </Field>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <Store className="w-4 h-4 inline mr-1.5" /> Business Name
+            </label>
+            <input
+              type="text"
+              value={businessDetails.name}
+              onChange={(e) => setBusinessDetails({...businessDetails, name: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
           </div>
-        </SectionContainer>
-        <SectionActions saving={saving} onReset={() => setShipping(defaultShipping)} onSave={handleSubmit} />
-      </form>
-    );
-  }
-
-  function TaxSection() {
-    const [gstPercent, onGstPercentChange] = useFormField(tax.gstPercent);
-    const [pan, onPanChange] = useFormField(tax.pan);
-    const [businessType, onBusinessTypeChange] = useFormField(tax.businessType);
-
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      const updatedTax = { ...tax, gstPercent: Number(gstPercent), pan, businessType };
-      setTax(updatedTax);
-      fakeSave("tax", updatedTax);
-    };
-
-    return (
-      <form key="tax-form" onSubmit={handleSubmit}>
-        <SectionContainer title="Tax (India)" description="GST settings for invoices and orders.">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <div className="flex items-center justify-between sm:col-span-2">
-              <div>
-                <label htmlFor="gstEnabled" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Collect GST
-                </label>
-                <p className="text-xs text-gray-500 dark:text-gray-400">Enable if you're registered for GST</p>
-              </div>
-              <Toggle
-                checked={tax.gstEnabled}
-                onChange={(v) => setTax((prev) => ({ ...prev, gstEnabled: v }))}
-                id="gstEnabled"
-                label="Toggle GST collection"
-              />
-            </div>
-            {tax.gstEnabled && (
-              <Field label="GST %" id="gstPercent">
-                <Input
-                  id="gstPercent"
-                  type="number"
-                  value={gstPercent}
-                  onChange={onGstPercentChange}
-                />
-              </Field>
-            )}
-            <Field label="PAN" id="pan">
-              <Input
-                id="pan"
-                value={pan}
-                onChange={(e) => onPanChange({ target: { value: e.target.value.toUpperCase() } })}
-                placeholder="ABCDE1234F"
-              />
-            </Field>
-            <Field label="Business type" id="businessType">
-              <Select id="businessType" value={businessType} onChange={onBusinessTypeChange}>
-                <option value="individual">Individual</option>
-                <option value="sole">Sole Proprietor</option>
-                <option value="llp">LLP</option>
-                <option value="pvtltd">Private Limited</option>
-                <option value="other">Other</option>
-              </Select>
-            </Field>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <User className="w-4 h-4 inline mr-1.5" /> Owner Name
+            </label>
+            <input
+              type="text"
+              value={businessDetails.owner}
+              onChange={(e) => setBusinessDetails({...businessDetails, owner: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
           </div>
-        </SectionContainer>
-        <SectionActions saving={saving} onReset={() => setTax(defaultTax)} onSave={handleSubmit} />
-      </form>
-    );
-  }
-
-  function ApiSection() {
-    const [publicKey, onPublicKeyChange] = useFormField(api.publicKey);
-    const [secretKey, onSecretKeyChange] = useFormField(api.secretKey);
-    const [webhookUrl, onWebhookUrlChange] = useFormField(api.webhookUrl);
-
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      const updatedApi = { publicKey, secretKey, webhookUrl, sandbox: api.sandbox };
-      setApi(updatedApi);
-      fakeSave("api", updatedApi);
-    };
-
-    return (
-      <form key="api-form" onSubmit={handleSubmit}>
-        <SectionContainer title="API & Webhooks" description="For custom integrations with your store.">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <Field label="Public key" id="publicKey">
-              <Input
-                id="publicKey"
-                value={publicKey}
-                onChange={onPublicKeyChange}
-                placeholder="pk_live_..."
-              />
-            </Field>
-            <Field label="Secret key" id="secretKey">
-              <Input
-                id="secretKey"
-                type="password"
-                value={secretKey}
-                onChange={onSecretKeyChange}
-                placeholder="sk_live_..."
-              />
-            </Field>
-            <div className="sm:col-span-2">
-              <Field label="Webhook URL" hint="We'll POST order events to this URL" id="webhookUrl">
-                <Input
-                  id="webhookUrl"
-                  value={webhookUrl}
-                  onChange={onWebhookUrlChange}
-                  placeholder="https://api.yourdomain.com/webhooks/orders"
-                />
-              </Field>
-            </div>
-            <div className="flex items-center justify-between sm:col-span-2">
-              <div>
-                <label htmlFor="sandbox" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Use sandbox mode
-                </label>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Test API calls without affecting live data
-                </p>
-              </div>
-              <Toggle
-                checked={api.sandbox}
-                onChange={(v) => setApi((prev) => ({ ...prev, sandbox: v }))}
-                id="sandbox"
-                label="Toggle sandbox mode"
-              />
-            </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <Mail className="w-4 h-4 inline mr-1.5" /> Email
+            </label>
+            <input
+              type="email"
+              value={businessDetails.email}
+              onChange={(e) => setBusinessDetails({...businessDetails, email: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
           </div>
-        </SectionContainer>
-        <SectionActions saving={saving} onReset={() => setApi(defaultApi)} onSave={handleSubmit} />
-      </form>
-    );
-  }
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <Phone className="w-4 h-4 inline mr-1.5" /> Phone Number
+            </label>
+            <input
+              type="text"
+              value={businessDetails.phone}
+              onChange={(e) => setBusinessDetails({...businessDetails, phone: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <MapPin className="w-4 h-4 inline mr-1.5" /> Address
+            </label>
+            <input
+              type="text"
+              value={businessDetails.address}
+              onChange={(e) => setBusinessDetails({...businessDetails, address: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <Building2 className="w-4 h-4 inline mr-1.5" /> GST Number
+            </label>
+            <input
+              type="text"
+              value={businessDetails.gst}
+              onChange={(e) => setBusinessDetails({...businessDetails, gst: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <FileText className="w-4 h-4 inline mr-1.5" /> PAN Number
+            </label>
+            <input
+              type="text"
+              value={businessDetails.pan}
+              onChange={(e) => setBusinessDetails({...businessDetails, pan: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <Shield className="w-4 h-4 inline mr-1.5" /> FSSAI Number
+            </label>
+            <input
+              type="text"
+              value={businessDetails.fssai}
+              onChange={(e) => setBusinessDetails({...businessDetails, fssai: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <Globe className="w-4 h-4 inline mr-1.5" /> Website
+            </label>
+            <input
+              type="text"
+              value={businessDetails.website}
+              onChange={(e) => setBusinessDetails({...businessDetails, website: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <DollarSign className="w-4 h-4 inline mr-1.5" /> Currency
+            </label>
+            <select
+              value={businessDetails.currency}
+              onChange={(e) => setBusinessDetails({...businessDetails, currency: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            >
+              <option value="₹">₹ (INR)</option>
+              <option value="$">$ (USD)</option>
+              <option value="€">€ (EUR)</option>
+              <option value="£">£ (GBP)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <Clock className="w-4 h-4 inline mr-1.5" /> Timezone
+            </label>
+            <select
+              value={businessDetails.timezone}
+              onChange={(e) => setBusinessDetails({...businessDetails, timezone: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            >
+              <option value="Asia/Kolkata">Asia/Kolkata (UTC+5:30)</option>
+              <option value="Asia/Dubai">Asia/Dubai (UTC+4)</option>
+              <option value="Asia/Singapore">Asia/Singapore (UTC+8)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <Calendar className="w-4 h-4 inline mr-1.5" /> Date Format
+            </label>
+            <select
+              value={businessDetails.dateFormat}
+              onChange={(e) => setBusinessDetails({...businessDetails, dateFormat: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            >
+              <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+              <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+              <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              <Store className="w-4 h-4 inline mr-1.5" /> Business Type
+            </label>
+            <input
+              type="text"
+              value={businessDetails.businessType}
+              onChange={(e) => setBusinessDetails({...businessDetails, businessType: e.target.value})}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
-  function DangerSection() {
-    const [deleteConfirm, onDeleteConfirmChange] = useFormField("");
+  const renderProductsTab = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Products</h3>
+          <p className="text-sm text-gray-500">Manage your product catalog</p>
+        </div>
+        <button
+          onClick={() => handleAddItem('product')}
+          className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" />
+          Add Product
+        </button>
+      </div>
 
-    const handleSubmit = (e) => {
-      e.preventDefault();
-      if (deleteConfirm === "DELETE") {
-        localStorage.removeItem("sellerSettings");
-        setProfile(defaultProfile);
-        setStore(defaultStore);
-        setSecurity(defaultSecurity);
-        setNotify(defaultNotify);
-        setPayments(defaultPayments);
-        setShipping(defaultShipping);
-        setTax(defaultTax);
-        setApi(defaultApi);
-        onDeleteConfirmChange({ target: { value: "" } });
-        showToast("Store deleted successfully", "success");
-      } else {
-        showToast("Confirmation text does not match", "error");
-      }
-    };
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="bg-gray-50">
+              <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Name</th>
+              <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Category</th>
+              <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Unit</th>
+              <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Rate</th>
+              <th className="text-center text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">GST %</th>
+              <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {products.map(product => (
+              <tr key={product.id} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                <td className="px-4 py-3 font-medium text-gray-900">{product.name}</td>
+                <td className="px-4 py-3 text-sm text-gray-600">{product.category}</td>
+                <td className="px-4 py-3 text-sm text-gray-600">{product.unit}</td>
+                <td className="px-4 py-3 text-right font-medium">₹{product.rate}</td>
+                <td className="px-4 py-3 text-center text-sm">{product.gst}%</td>
+                <td className="px-4 py-3 text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    <button onClick={() => handleEditItem(product)} className="p-1 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors">
+                      <Edit className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => handleDeleteItem(product)} className="p-1 hover:bg-red-50 rounded-lg text-red-600 transition-colors">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 
-    return (
-      <form key="danger-form" onSubmit={handleSubmit}>
-        <SectionContainer title="Danger Zone" description="Irreversible actions. Handle with care.">
-          <div className="space-y-6">
-            <div className="rounded-lg border border-red-200 bg-red-50 p-6 dark:border-red-900/50 dark:bg-red-900/20">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
-                <div className="mb-4 sm:mb-0">
-                  <h3 className="text-lg font-medium text-red-800 dark:text-red-200">Delete store</h3>
-                  <p className="mt-1 text-sm text-red-700 dark:text-red-300">
-                    This will permanently remove your store, products, and orders.
-                  </p>
+  const renderUnitsTab = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Units</h3>
+          <p className="text-sm text-gray-500">Manage measurement units</p>
+        </div>
+        <button
+          onClick={() => handleAddItem('unit')}
+          className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" />
+          Add Unit
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {units.map(unit => (
+          <div key={unit.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-gray-100 rounded-lg">
+                  <RulerIcon className="w-4 h-4 text-gray-600" />
                 </div>
-                <div className="flex flex-col gap-3 sm:w-96">
-                  <Input
-                    id="deleteConfirm"
-                    placeholder="Type DELETE to confirm"
-                    value={deleteConfirm}
-                    onChange={onDeleteConfirmChange}
-                    className="border-red-300 focus:border-red-500 focus:ring-red-500"
-                  />
-                  <button
-                    type="submit"
-                    className="rounded-md border border-red-600 bg-red-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
-                  >
-                    Delete Store
-                  </button>
+                <div>
+                  <p className="font-medium text-gray-900">{unit.name}</p>
+                  <p className="text-sm text-gray-500">{unit.short} • {unit.type}</p>
                 </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button onClick={() => handleEditItem(unit)} className="p-1 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors">
+                  <Edit className="w-3 h-3" />
+                </button>
+                <button onClick={() => handleDeleteItem(unit)} className="p-1 hover:bg-red-50 rounded-lg text-red-600 transition-colors">
+                  <Trash2 className="w-3 h-3" />
+                </button>
               </div>
             </div>
           </div>
-        </SectionContainer>
-      </form>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderCategoriesTab = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Categories</h3>
+          <p className="text-sm text-gray-500">Manage product and inventory categories</p>
+        </div>
+        <button
+          onClick={() => handleAddItem('category')}
+          className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" />
+          Add Category
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {categories.map(category => (
+          <div key={category.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">{category.icon}</span>
+                <div>
+                  <p className="font-medium text-gray-900">{category.name}</p>
+                  <p className="text-sm text-gray-500">{category.type}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button onClick={() => handleEditItem(category)} className="p-1 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors">
+                  <Edit className="w-3 h-3" />
+                </button>
+                <button onClick={() => handleDeleteItem(category)} className="p-1 hover:bg-red-50 rounded-lg text-red-600 transition-colors">
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderPaymentTab = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Payment Modes</h3>
+          <p className="text-sm text-gray-500">Enable/disable payment methods</p>
+        </div>
+        <button
+          onClick={() => handleAddItem('payment')}
+          className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" />
+          Add Payment Mode
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {paymentModes.map(mode => (
+          <div key={mode.id} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-3">
+              <CreditCard className="w-5 h-5 text-gray-600" />
+              <span className="font-medium text-gray-900">{mode.name}</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  setPaymentModes(paymentModes.map(m => 
+                    m.id === mode.id ? { ...m, enabled: !m.enabled } : m
+                  ));
+                }}
+                className={`relative w-10 h-6 rounded-full transition-colors ${mode.enabled ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${mode.enabled ? 'transform translate-x-4' : ''}`} />
+              </button>
+              <div className="flex items-center gap-1">
+                <button onClick={() => handleEditItem(mode)} className="p-1 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors">
+                  <Edit className="w-3 h-3" />
+                </button>
+                <button onClick={() => handleDeleteItem(mode)} className="p-1 hover:bg-red-50 rounded-lg text-red-600 transition-colors">
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderExpensesTab = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">Expense Categories</h3>
+          <p className="text-sm text-gray-500">Manage expense categories</p>
+        </div>
+        <button
+          onClick={() => handleAddItem('expense')}
+          className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" />
+          Add Category
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {expenseCategories.map(category => (
+          <div key={category.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">{category.icon}</span>
+                <span className="font-medium text-gray-900">{category.name}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <button onClick={() => handleEditItem(category)} className="p-1 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors">
+                  <Edit className="w-3 h-3" />
+                </button>
+                <button onClick={() => handleDeleteItem(category)} className="p-1 hover:bg-red-50 rounded-lg text-red-600 transition-colors">
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderUsersTab = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900">User Management</h3>
+          <p className="text-sm text-gray-500">Manage users and permissions</p>
+        </div>
+        <button
+          onClick={() => handleAddItem('user')}
+          className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+        >
+          <UserPlus className="w-4 h-4" />
+          Add User
+        </button>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="bg-gray-50">
+              <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">User</th>
+              <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Email</th>
+              <th className="text-center text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Role</th>
+              <th className="text-center text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Status</th>
+              <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Last Login</th>
+              <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-4 py-3">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map(user => (
+              <tr key={user.id} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">
+                      <User className="w-4 h-4 text-gray-600" />
+                    </div>
+                    <span className="font-medium text-gray-900">{user.name}</span>
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-sm text-gray-600">{user.email}</td>
+                <td className="px-4 py-3 text-center">{getRoleBadge(user.role)}</td>
+                <td className="px-4 py-3 text-center">{getStatusBadge(user.status)}</td>
+                <td className="px-4 py-3 text-sm text-gray-500">{user.lastLogin || '-'}</td>
+                <td className="px-4 py-3 text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    <button onClick={() => handleEditItem(user)} className="p-1 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors">
+                      <Edit className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => handleDeleteItem(user)} className="p-1 hover:bg-red-50 rounded-lg text-red-600 transition-colors">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  const renderBackupTab = () => (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Backup Settings</h3>
+            <p className="text-sm text-gray-500">Configure automatic backups</p>
+          </div>
+          <button
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            <Database className="w-4 h-4" />
+            Backup Now
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Auto Backup</span>
+              <button
+                onClick={() => setBackupSettings({...backupSettings, autoBackup: !backupSettings.autoBackup})}
+                className={`relative w-10 h-6 rounded-full transition-colors ${backupSettings.autoBackup ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${backupSettings.autoBackup ? 'transform translate-x-4' : ''}`} />
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Frequency</span>
+              <select
+                value={backupSettings.backupFrequency}
+                onChange={(e) => setBackupSettings({...backupSettings, backupFrequency: e.target.value})}
+                className="px-3 py-1 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              >
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Backup Time</span>
+              <input
+                type="time"
+                value={backupSettings.backupTime}
+                onChange={(e) => setBackupSettings({...backupSettings, backupTime: e.target.value})}
+                className="px-3 py-1 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              />
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Location</span>
+              <select
+                value={backupSettings.backupLocation}
+                onChange={(e) => setBackupSettings({...backupSettings, backupLocation: e.target.value})}
+                className="px-3 py-1 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              >
+                <option value="cloud">Cloud</option>
+                <option value="local">Local Drive</option>
+                <option value="both">Both</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Retention (days)</span>
+              <input
+                type="number"
+                value={backupSettings.retentionDays}
+                onChange={(e) => setBackupSettings({...backupSettings, retentionDays: parseInt(e.target.value)})}
+                className="w-20 px-3 py-1 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              />
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Include Images</span>
+              <button
+                onClick={() => setBackupSettings({...backupSettings, includeImages: !backupSettings.includeImages})}
+                className={`relative w-10 h-6 rounded-full transition-colors ${backupSettings.includeImages ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${backupSettings.includeImages ? 'transform translate-x-4' : ''}`} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <p className="text-xs text-gray-500">Last Backup</p>
+              <p className="font-medium text-gray-900">{backupSettings.lastBackup}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Backup Size</p>
+              <p className="font-medium text-gray-900">{backupSettings.backupSize}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Storage Used</p>
+              <p className="font-medium text-gray-900">2.4 GB</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500">Backups Available</p>
+              <p className="font-medium text-gray-900">12</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderExcelTab = () => (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Excel Settings</h3>
+            <p className="text-sm text-gray-500">Configure Excel export preferences</p>
+          </div>
+          <button
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            <Save className="w-4 h-4" />
+            Save Settings
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Default Export Format</span>
+              <select
+                value={excelSettings.defaultExportFormat}
+                onChange={(e) => setExcelSettings({...excelSettings, defaultExportFormat: e.target.value})}
+                className="px-3 py-1 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              >
+                <option value="xlsx">.xlsx (Excel)</option>
+                <option value="xls">.xls (Excel 97-2003)</option>
+                <option value="csv">.csv (CSV)</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Include Headers</span>
+              <button
+                onClick={() => setExcelSettings({...excelSettings, includeHeaders: !excelSettings.includeHeaders})}
+                className={`relative w-10 h-6 rounded-full transition-colors ${excelSettings.includeHeaders ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${excelSettings.includeHeaders ? 'transform translate-x-4' : ''}`} />
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Include Images</span>
+              <button
+                onClick={() => setExcelSettings({...excelSettings, includeImages: !excelSettings.includeImages})}
+                className={`relative w-10 h-6 rounded-full transition-colors ${excelSettings.includeImages ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${excelSettings.includeImages ? 'transform translate-x-4' : ''}`} />
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Date Format</span>
+              <select
+                value={excelSettings.dateFormat}
+                onChange={(e) => setExcelSettings({...excelSettings, dateFormat: e.target.value})}
+                className="px-3 py-1 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              >
+                <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Number Format</span>
+              <select
+                value={excelSettings.numberFormat}
+                onChange={(e) => setExcelSettings({...excelSettings, numberFormat: e.target.value})}
+                className="px-3 py-1 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+              >
+                <option value="currency">Currency</option>
+                <option value="number">Number</option>
+                <option value="accounting">Accounting</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Auto Export</span>
+              <button
+                onClick={() => setExcelSettings({...excelSettings, autoExport: !excelSettings.autoExport})}
+                className={`relative w-10 h-6 rounded-full transition-colors ${excelSettings.autoExport ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${excelSettings.autoExport ? 'transform translate-x-4' : ''}`} />
+              </button>
+            </div>
+          </div>
+
+          {excelSettings.autoExport && (
+            <div className="bg-gray-50 rounded-lg p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-700">Export Time</span>
+                <input
+                  type="time"
+                  value={excelSettings.exportTime}
+                  onChange={(e) => setExcelSettings({...excelSettings, exportTime: e.target.value})}
+                  className="px-3 py-1 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-700">Email Reports</span>
+              <button
+                onClick={() => setExcelSettings({...excelSettings, emailReports: !excelSettings.emailReports})}
+                className={`relative w-10 h-6 rounded-full transition-colors ${excelSettings.emailReports ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${excelSettings.emailReports ? 'transform translate-x-4' : ''}`} />
+              </button>
+            </div>
+          </div>
+
+          {excelSettings.emailReports && (
+            <div className="bg-gray-50 rounded-lg p-4 md:col-span-2">
+              <div className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-gray-700">Email Recipients</span>
+                <input
+                  type="text"
+                  value={excelSettings.emailRecipients}
+                  onChange={(e) => setExcelSettings({...excelSettings, emailRecipients: e.target.value})}
+                  placeholder="Enter email addresses separated by comma"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  if (loading) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-gray-200 border-t-gray-800 rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-gray-500">Loading settings...</p>
+        </div>
+      </div>
     );
   }
 
   return (
-    <div className={`min-h-screen ${isDarkMode ? "dark bg-gray-900" : "bg-gray-50"}`}>
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <header className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Seller Settings</h1>
-          <p className="mt-2 text-lg text-gray-600 dark:text-gray-300">
-            Manage your account, store details, payments, and more
-          </p>
-        </header>
-
-        <div className="lg:grid lg:grid-cols-12 lg:gap-8">
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            onKeyDown={(e) => e.key === "Enter" && setMobileMenuOpen(!mobileMenuOpen)}
-            className="mb-4 flex w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 shadow-sm lg:hidden dark:border-gray-700 dark:bg-gray-800 dark:text-white"
-          >
-            <span>{nav.find((item) => item.id === active)?.label || "Menu"}</span>
-            <ChevronRight
-              className={`h-4 w-4 transition-transform ${mobileMenuOpen ? "rotate-90" : ""}`}
-            />
-          </button>
-
-          <aside className="hidden lg:col-span-3 lg:block">
-            <nav className="space-y-1">
-              {nav.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => setActive(item.id)}
-                  onKeyDown={(e) => e.key === "Enter" && setActive(item.id)}
-                  className={`group flex w-full items-center rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                    active === item.id
-                      ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-                      : "text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-                  }`}
-                >
-                  <item.icon
-                    className={`mr-3 h-5 w-5 flex-shrink-0 ${
-                      active === item.id
-                        ? "text-blue-500 dark:text-blue-400"
-                        : "text-gray-400 group-hover:text-gray-500 dark:text-gray-500 dark:group-hover:text-gray-400"
-                    }`}
-                  />
-                  {item.label}
-                </button>
-              ))}
-            </nav>
-          </aside>
-
-          {mobileMenuOpen && (
-            <div className="lg:hidden">
-              <nav className="mb-6 space-y-1 rounded-lg border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-                {nav.map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => {
-                      setActive(item.id);
-                      setMobileMenuOpen(false);
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && (setActive(item.id), setMobileMenuOpen(false))}
-                    className={`group flex w-full items-center rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                      active === item.id
-                        ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-                        : "text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-                    }`}
-                  >
-                    <item.icon
-                      className={`mr-3 h-5 w-5 flex-shrink-0 ${
-                        active === item.id
-                          ? "text-blue-500 dark:text-blue-400"
-                          : "text-gray-400 group-hover:text-gray-500 dark:text-gray-500 dark:group-hover:text-gray-400"
-                      }`}
-                    />
-                    {item.label}
-                  </button>
-                ))}
-              </nav>
+    <div className="space-y-5 md:space-y-6">
+      {/* Header */}
+      <div className="bg-gradient-to-r from-gray-800 to-gray-900 rounded-2xl shadow-lg p-4 md:p-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-white/10 backdrop-blur rounded-xl">
+              <SettingsIcon className="w-6 h-6 text-white" />
             </div>
-          )}
-
-          <main className="lg:col-span-9">
-            {active === "profile" && <ProfileSection />}
-            {active === "store" && <StoreSection />}
-            {active === "security" && <SecuritySection />}
-            {active === "notifications" && <NotificationsSection />}
-            {active === "payments" && <PaymentsSection />}
-            {active === "shipping" && <ShippingSection />}
-            {active === "tax" && <TaxSection />}
-            {active === "api" && <ApiSection />}
-            {active === "danger" && <DangerSection />}
-          </main>
+            <div>
+              <h1 className="text-xl md:text-2xl font-bold text-white">Settings</h1>
+              <p className="text-gray-400 text-sm">Manage your business configuration</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 bg-white/10 backdrop-blur px-3 py-2 rounded-xl border border-white/20">
+              <Clock className="w-4 h-4 text-gray-400" />
+              <span className="text-sm text-white">Last updated: Today</span>
+            </div>
+          </div>
         </div>
       </div>
 
-      {toast.show && (
-        <div
-          role="alert"
-          className={`fixed bottom-4 right-4 z-50 flex items-center rounded-md border px-4 py-3 shadow-lg sm:bottom-6 sm:right-6 ${
-            toast.type === "success"
-              ? "border-green-200 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-900/20 dark:text-green-200"
-              : "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-900/20 dark:text-red-200"
-          }`}
-        >
-          {toast.type === "success" ? (
-            <Check className="h-5 w-5 text-green-500 dark:text-green-400" />
-          ) : (
-            <X className="h-5 w-5 text-red-500 dark:text-red-400" />
-          )}
-          <span className="ml-2 text-sm font-medium">{toast.message}</span>
-          <button
-            onClick={() => setToast((prev) => ({ ...prev, show: false }))}
-            className="ml-4 text-sm font-medium"
-            aria-label="Close toast"
-          >
-            <X className="h-4 w-4" />
-          </button>
+      {/* Tab Navigation */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="flex overflow-x-auto border-b border-gray-200">
+          {[
+            { id: 'business', label: 'Business', icon: Store },
+            { id: 'products', label: 'Products', icon: Package },
+            { id: 'units', label: 'Units', icon: RulerIcon },
+            { id: 'categories', label: 'Categories', icon: Tag },
+            { id: 'payment', label: 'Payment', icon: CreditCard },
+            { id: 'expenses', label: 'Expenses', icon: Wallet },
+            { id: 'users', label: 'Users', icon: Users },
+            { id: 'backup', label: 'Backup', icon: Database },
+            { id: 'excel', label: 'Excel', icon: FileSpreadsheet }
+          ].map(tab => {
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-4 py-3 text-sm font-medium transition-colors flex items-center gap-2 whitespace-nowrap ${
+                  activeTab === tab.id
+                    ? 'text-orange-600 border-b-2 border-orange-600 bg-orange-50'
+                    : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {tab.label}
+              </button>
+            );
+          })}
         </div>
-      )}
+
+        <div className="p-4 md:p-6">
+          {renderTabContent()}
+        </div>
+      </div>
     </div>
   );
-}
+};
+
+export default SettingsPage;
