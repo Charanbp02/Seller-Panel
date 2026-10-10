@@ -1,6 +1,6 @@
 // Pages/Ingredients/Ingredients.jsx
 import React, { useState, useEffect } from 'react';
-import { Box, ShoppingCart, TrendingDown } from 'lucide-react';
+import { Box, ShoppingCart, TrendingDown, AlertTriangle } from 'lucide-react';
 import { db } from '../../firebase/firebaseConfig';
 import {
   collection, addDoc, updateDoc, deleteDoc, doc, query, where,
@@ -28,7 +28,6 @@ const TAB_LABELS = { inventory: 'Inventory', purchase: 'Purchase', usage: 'Usage
 
 const Ingredients = () => {
   const [activeTab, setActiveTab] = useState('inventory');
-  // formType: null | 'inventory' | 'purchase' | 'usage' — replaces the ambiguous `isAdding`
   const [formType, setFormType] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -37,6 +36,8 @@ const Ingredients = () => {
   const [selectedItem, setSelectedItem] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteId, setDeleteId] = useState(null);
+  // ★ New: unified delete target for ingredient OR nested row
+  const [deleteTarget, setDeleteTarget] = useState(null); // { type: 'purchase' | 'usage', row, ingredientId }
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -61,7 +62,7 @@ const Ingredients = () => {
     return () => unsub();
   }, []);
 
-  // Flatten purchases + usage when inventory changes
+  // Flatten purchases + usage
   useEffect(() => {
     if (inventoryData.length === 0) {
       setPurchaseData([]);
@@ -74,6 +75,7 @@ const Ingredients = () => {
       (item.purchases || []).forEach(p => {
         allPurchases.push({
           ...p,
+          ingredientId: item.id,                 // ★ track parent
           ingredientName: item.ingredientName,
           unit: item.unit,
           supplier: p.supplier || item.supplier
@@ -82,6 +84,7 @@ const Ingredients = () => {
       (item.usage || []).forEach(u => {
         allUsage.push({
           ...u,
+          ingredientId: item.id,                 // ★ track parent
           ingredientName: item.ingredientName,
           unit: item.unit
         });
@@ -114,7 +117,7 @@ const Ingredients = () => {
   const lowStockItems = inventoryWithStock.filter(i => i.currentStock <= i.reorderLevel);
   const outOfStockItems = inventoryWithStock.filter(i => i.currentStock <= 0);
 
-  // ---------- Handlers ----------
+  // ---------- Ingredient Handlers ----------
   const handleAddIngredient = async () => {
     if (!inventoryFormData.ingredientName || !inventoryFormData.openingStock) {
       alert('Please fill all required fields');
@@ -134,7 +137,6 @@ const Ingredients = () => {
       };
 
       if (isEditing && editingId) {
-        // FIX: actually update instead of addDoc
         await updateDoc(doc(db, 'ingredients', editingId), payload);
       } else {
         await addDoc(collection(db, 'ingredients'), {
@@ -256,21 +258,105 @@ const Ingredients = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // ---------- Ingredient DELETE ----------
   const handleDelete = (id) => {
     setDeleteId(id);
+    setDeleteTarget(null);       // ★ clear row target
     setShowDeleteModal(true);
   };
 
+  // ---------- Purchase Row DELETE ----------
+  const handleDeletePurchaseRow = (purchaseRow) => {
+    if (!purchaseRow || !purchaseRow.ingredientId) {
+      alert('Cannot identify parent ingredient for this purchase.');
+      return;
+    }
+    setDeleteTarget({ type: 'purchase', row: purchaseRow });
+    setDeleteId(null);
+    setShowDeleteModal(true);
+  };
+
+  // ---------- Usage Row DELETE ----------
+  const handleDeleteUsageRow = (usageRow) => {
+    if (!usageRow || !usageRow.ingredientId) {
+      alert('Cannot identify parent ingredient for this usage entry.');
+      return;
+    }
+    setDeleteTarget({ type: 'usage', row: usageRow });
+    setDeleteId(null);
+    setShowDeleteModal(true);
+  };
+
+  // ---------- Unified confirmDelete ----------
   const confirmDelete = async () => {
     setSaving(true);
     try {
-      await deleteDoc(doc(db, 'ingredients', deleteId));
+      // ============ Case 1: Ingredient ============
+      if (!deleteTarget && deleteId) {
+        await deleteDoc(doc(db, 'ingredients', deleteId));
+        setShowDeleteModal(false);
+        setDeleteId(null);
+        alert('Ingredient deleted successfully!');
+        return;
+      }
+
+      // ============ Case 2: Purchase or Usage row ============
+      if (deleteTarget) {
+        const { type, row } = deleteTarget;
+        const ingredientId = row.ingredientId;
+        const parentDoc = inventoryData.find(i => i.id === ingredientId);
+        if (!parentDoc) throw new Error('Ingredient not found');
+
+        const isSamePurchase = (a, b) =>
+          a.date === b.date &&
+          Number(a.quantity) === Number(b.quantity) &&
+          Number(a.rate) === Number(b.rate) &&
+          (a.invoice || '') === (b.invoice || '');
+
+        const isSameUsage = (a, b) =>
+          a.date === b.date &&
+          Number(a.productionUsage || 0) === Number(b.productionUsage || 0) &&
+          Number(a.wastage || 0) === Number(b.wastage || 0) &&
+          (a.purpose || '') === (b.purpose || '');
+
+        if (type === 'purchase') {
+          const updatedPurchases = (parentDoc.purchases || [])
+            .filter(p => !isSamePurchase(p, row));
+
+          if (updatedPurchases.length === (parentDoc.purchases || []).length) {
+            throw new Error('Purchase not found (already deleted?)');
+          }
+
+          await updateDoc(doc(db, 'ingredients', ingredientId), {
+            purchases: updatedPurchases,
+            updatedAt: serverTimestamp()
+          });
+          alert('Purchase deleted successfully!');
+        } else if (type === 'usage') {
+          const updatedUsage = (parentDoc.usage || [])
+            .filter(u => !isSameUsage(u, row));
+
+          if (updatedUsage.length === (parentDoc.usage || []).length) {
+            throw new Error('Usage entry not found (already deleted?)');
+          }
+
+          await updateDoc(doc(db, 'ingredients', ingredientId), {
+            usage: updatedUsage,
+            updatedAt: serverTimestamp()
+          });
+          alert('Usage entry deleted successfully!');
+        }
+
+        setShowDeleteModal(false);
+        setDeleteTarget(null);
+        return;
+      }
+
+      // Nothing to delete
       setShowDeleteModal(false);
-      setDeleteId(null);
-      alert('Ingredient deleted successfully!');
     } catch (e) {
-      console.error('delete ingredient:', e);
-      alert('Failed to delete ingredient. Please try again.');
+      console.error('delete:', e);
+      alert('Failed to delete: ' + (e.message || 'Unknown error'));
     } finally {
       setSaving(false);
     }
@@ -282,7 +368,7 @@ const Ingredients = () => {
     return snap.empty ? null : snap.docs[0].id;
   };
 
-  // ---------- Form state management ----------
+  // ---------- Form state ----------
   const openForm = (type) => {
     setFormType(type);
     setActiveTab(type);
@@ -298,14 +384,6 @@ const Ingredients = () => {
     setInventoryFormData(emptyInventoryForm());
     setPurchaseFormData(emptyPurchaseForm());
     setUsageFormData(emptyUsageForm());
-  };
-
-  // Placeholder delete handlers for purchase/usage (keep as no-op like the original)
-  const handleDeletePurchaseRow = () => {
-    // TODO: implement nested array delete via updateDoc
-  };
-  const handleDeleteUsageRow = () => {
-    // TODO: implement nested array delete via updateDoc
   };
 
   // ---------- Render ----------
@@ -404,7 +482,7 @@ const Ingredients = () => {
               searchTerm={searchTerm}
               setSearchTerm={setSearchTerm}
               onAdd={() => openForm('purchase')}
-              onDelete={handleDeletePurchaseRow}
+              onDelete={handleDeletePurchaseRow}   // ★ now functional
             />
           </div>
         )}
@@ -429,7 +507,7 @@ const Ingredients = () => {
               searchTerm={searchTerm}
               setSearchTerm={setSearchTerm}
               onAdd={() => openForm('usage')}
-              onDelete={handleDeleteUsageRow}
+              onDelete={handleDeleteUsageRow}      // ★ now functional
             />
           </div>
         )}
@@ -440,12 +518,69 @@ const Ingredients = () => {
         onClose={() => setSelectedItem(null)}
       />
 
-      <DeleteConfirmModal
-        open={showDeleteModal}
-        saving={saving}
-        onCancel={() => setShowDeleteModal(false)}
-        onConfirm={confirmDelete}
-      />
+      {/* Ingredient Delete Modal */}
+      {!deleteTarget && (
+        <DeleteConfirmModal
+          open={showDeleteModal}
+          saving={saving}
+          onCancel={() => {
+            setShowDeleteModal(false);
+            setDeleteId(null);
+          }}
+          onConfirm={confirmDelete}
+        />
+      )}
+
+      {/* Row Delete Modal (Purchase / Usage) */}
+      {deleteTarget && showDeleteModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+            <div className="text-center">
+              <div className="w-16 h-16 bg-red-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <AlertTriangle className="w-8 h-8 text-red-600" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">
+                {deleteTarget.type === 'purchase' ? 'Delete Purchase' : 'Delete Usage Entry'}
+              </h3>
+              <p className="text-gray-500 mb-6">
+                {deleteTarget.type === 'purchase' ? (
+                  <>
+                    Delete purchase of{' '}
+                    <b>
+                      {deleteTarget.row.quantity} {deleteTarget.row.unit || ''}
+                    </b>{' '}
+                    on <b>{deleteTarget.row.date}</b> for{' '}
+                    <b>{deleteTarget.row.ingredientName}</b>?
+                  </>
+                ) : (
+                  <>
+                    Delete usage on <b>{deleteTarget.row.date}</b> for{' '}
+                    <b>{deleteTarget.row.ingredientName}</b>?
+                  </>
+                )}
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowDeleteModal(false);
+                    setDeleteTarget(null);
+                  }}
+                  className="flex-1 px-4 py-2 border border-gray-200 rounded-lg text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  disabled={saving}
+                  className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg disabled:opacity-50"
+                >
+                  {saving ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

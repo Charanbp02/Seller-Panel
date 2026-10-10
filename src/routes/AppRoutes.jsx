@@ -21,6 +21,7 @@ import Alerts from "../Pages/Alerts/Alerts";
 import AuditHistory from "../Pages/AuditHistory/AuditHistory";
 import Settings from "../Pages/Settings/Settings";
 import ProductCosting from "../Pages/ProductCosting/ProductCosting";
+import Resume from "../Pages/Resume/Resume";   // 🆕 RESUME ಸೇರಿಸಿ
 
 // Fallback/Placeholder pages
 const PlaceholderPage = ({ title }) => (
@@ -215,6 +216,18 @@ const AppRoutes = () => {
             <ProtectedRoute>
               <Layout>
                 <Settings />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        {/* 🆕 RESUME ROUTE — Settings ನಂತರ, Catch-all ಮೊದಲು */}
+        <Route
+          path="/resume"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Resume />
               </Layout>
             </ProtectedRoute>
           }

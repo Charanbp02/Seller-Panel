@@ -1,6 +1,6 @@
-// Pages/PackingMaterials/widgets/UsageTable.jsx
+// src/Pages/PackingMaterials/widgets/UsageTable.jsx
 import React from 'react';
-import { Search, Download, Printer, Trash2, Plus, TrendingDown } from 'lucide-react';
+import { Search, Download, Printer, Trash2, Plus, TrendingDown, Lock } from 'lucide-react';
 
 const UsageTable = ({ rows, searchTerm, setSearchTerm, onAdd, onDelete }) => {
   return (
@@ -49,29 +49,54 @@ const UsageTable = ({ rows, searchTerm, setSearchTerm, onAdd, onDelete }) => {
             </tr>
           </thead>
           <tbody>
-            {rows.map((item, index) => (
-              <tr key={index} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
-                <td className="px-4 py-3 text-sm text-gray-600">{item.date}</td>
-                <td className="px-4 py-3">
-                  <div>
-                    <span className="font-medium text-gray-900">{item.materialName}</span>
+            {rows.map((item, index) => {
+              const isAuto = item.source === 'production';
+              return (
+                <tr
+                  key={index}
+                  className={`border-t border-gray-100 transition-colors ${
+                    isAuto ? 'bg-blue-50/40' : 'hover:bg-gray-50'
+                  }`}
+                >
+                  <td className="px-4 py-3 text-sm text-gray-600">{item.date}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-gray-900">{item.materialName}</span>
+                      {isAuto && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                          <Lock className="w-3 h-3" /> Auto
+                        </span>
+                      )}
+                    </div>
                     {item.size && <p className="text-xs text-gray-400">{item.size}</p>}
-                  </div>
-                </td>
-                <td className="px-4 py-3 text-center font-medium text-blue-600">
-                  {item.used || 0} {item.unit}
-                </td>
-                <td className="px-4 py-3 text-center font-medium text-orange-600">
-                  {item.damaged || 0} {item.unit}
-                </td>
-                <td className="px-4 py-3 text-sm text-gray-600">{item.purpose || '-'}</td>
-                <td className="px-4 py-3 text-right">
-                  <button onClick={() => onDelete(item)} className="p-1.5 hover:bg-red-50 rounded-lg text-red-600 transition-colors">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-4 py-3 text-center font-medium text-blue-600">
+                    {item.used || 0} {item.unit}
+                  </td>
+                  <td className="px-4 py-3 text-center font-medium text-orange-600">
+                    {item.damaged || 0} {item.unit}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{item.purpose || '-'}</td>
+                  <td className="px-4 py-3 text-right">
+                    {isAuto ? (
+                      <span
+                        className="text-xs text-blue-600 inline-flex items-center gap-1"
+                        title="Edit or delete this entry from the Production page"
+                      >
+                        <Lock className="w-3 h-3" /> Auto
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => onDelete(item)}
+                        className="p-1.5 hover:bg-red-50 rounded-lg text-red-600 transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -82,7 +107,9 @@ const UsageTable = ({ rows, searchTerm, setSearchTerm, onAdd, onDelete }) => {
             <TrendingDown className="w-8 h-8 text-gray-400" />
           </div>
           <p className="text-gray-500 font-medium">No usage records found</p>
-          <p className="text-sm text-gray-400 mt-1">Add your first usage entry</p>
+          <p className="text-sm text-gray-400 mt-1">
+            Usage entries will appear when you add production entries with packing materials
+          </p>
         </div>
       )}
     </>

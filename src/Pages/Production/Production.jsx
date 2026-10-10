@@ -91,7 +91,7 @@ const Production = () => {
   }, []);
 
   // ============================================================
-  // RESOLVERS (must run OUTSIDE transaction)
+  // RESOLVERS
   // ============================================================
   const resolveStockRefs = async (productNames) => {
     const unique = [...new Set(productNames.filter(Boolean))];
@@ -199,6 +199,8 @@ const Production = () => {
       }
 
       // ---- PHASE B: WRITES ----
+      const nowISO = new Date().toISOString();
+      const productionId = prodRef.id;
 
       // B1. Production doc
       if (isEdit && existing?.exists()) {
@@ -231,7 +233,7 @@ const Production = () => {
         }
       }
 
-      // B3. Packing materials deltas
+      // B3. Packing material stock deltas
       for (const [name, delta] of Object.entries(packingDeltas)) {
         if (delta === 0) continue;
         const ref = packingRefs[name];
@@ -241,6 +243,63 @@ const Production = () => {
         const newStock = num(sd.currentStock) + delta;
         tx.update(ref, {
           currentStock: newStock,
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      // 🆕 B4. AUTO-USAGE entries
+      const usageUpdatesByName = {};
+
+      // Step 1: Remove old auto-usage entries from this production
+      for (const [name, ref] of Object.entries(packingRefs)) {
+        if (!ref) continue;
+        const snap = packingSnaps[name];
+        if (!snap?.exists()) continue;
+        const sd = snap.data();
+        const existingUsage = sd.usage || [];
+        const filtered = existingUsage.filter(
+          u => !(u.source === 'production' && u.sourceId === productionId)
+        );
+        if (filtered.length !== existingUsage.length) {
+          usageUpdatesByName[name] = filtered;
+        }
+      }
+
+      // Step 2: Add new auto-usage entries
+      for (const p of (payload.packingUsed || [])) {
+        const name = p.materialName;
+        const qty = num(p.quantity);
+        if (!name || qty <= 0) continue;
+
+        let base = usageUpdatesByName[name];
+        if (base === undefined) {
+          const snap = packingSnaps[name];
+          if (!snap?.exists()) continue;
+          base = (snap.data().usage || []).filter(
+            u => !(u.source === 'production' && u.sourceId === productionId)
+          );
+        }
+
+        base.push({
+          date: payload.date,
+          used: qty,
+          damaged: 0,
+          purpose: 'Production',
+          remarks: `Auto: ${payload.productName} — ${payload.produced}${payload.unit || 'kg'}`,
+          source: 'production',
+          sourceId: productionId,
+          unit: p.unit || 'pcs',
+          createdAt: nowISO
+        });
+        usageUpdatesByName[name] = base;
+      }
+
+      // Step 3: Write usage arrays
+      for (const [name, usageArr] of Object.entries(usageUpdatesByName)) {
+        const ref = packingRefs[name];
+        if (!ref) continue;
+        tx.update(ref, {
+          usage: usageArr,
           updatedAt: serverTimestamp()
         });
       }
@@ -293,15 +352,29 @@ const Production = () => {
       tx.delete(prodRef);
 
       if (ref && snap?.exists()) {
-        tx.update(ref, { produced: num(snap.data().produced) - qty, updatedAt: serverTimestamp() });
+        tx.update(ref, {
+          produced: num(snap.data().produced) - qty,
+          updatedAt: serverTimestamp()
+        });
       }
 
+      // Reverse packing stock + remove auto-usage
       for (const p of (pData.packingUsed || [])) {
         const pref = packingRefs[p.materialName];
         const psnap = pSnaps[p.materialName];
         if (!pref || !psnap?.exists()) continue;
+
+        const sd = psnap.data();
+        const newStock = num(sd.currentStock) + num(p.quantity);
+
+        const existingUsage = sd.usage || [];
+        const filteredUsage = existingUsage.filter(
+          u => !(u.source === 'production' && u.sourceId === id)
+        );
+
         tx.update(pref, {
-          currentStock: num(psnap.data().currentStock) + num(p.quantity),
+          currentStock: newStock,
+          usage: filteredUsage,
           updatedAt: serverTimestamp()
         });
       }
@@ -420,7 +493,6 @@ const Production = () => {
     setFormData(emptyForm());
   };
 
-  // Packing row helpers
   const addPackingRow = () => {
     patchForm({
       packingUsed: [...(formData.packingUsed || []), { materialName: '', quantity: '', unit: 'pcs' }]
@@ -484,7 +556,6 @@ const Production = () => {
       <SummaryCards totals={totals} />
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        {/* Tabs */}
         <div className="flex border-b border-gray-200">
           {[
             { key: 'production', label: 'Production', Icon: Factory },
@@ -508,7 +579,6 @@ const Production = () => {
           })}
         </div>
 
-        {/* ---------- PRODUCTION TAB ---------- */}
         {activeTab === 'production' && (
           <div className="p-4 md:p-6">
             {isAdding && (
@@ -539,7 +609,6 @@ const Production = () => {
           </div>
         )}
 
-        {/* ---------- STOCK TAB ---------- */}
         {activeTab === 'stock' && (
           <div className="p-4 md:p-6">
             <StockTable
@@ -551,7 +620,6 @@ const Production = () => {
         )}
       </div>
 
-      {/* View Modal */}
       <ProductionViewModal
         item={selectedProduction}
         onClose={() => setSelectedProduction(null)}
@@ -559,7 +627,6 @@ const Production = () => {
         onDelete={() => { const it = selectedProduction; setSelectedProduction(null); setDeleteId(it.id); setShowDelete(true); }}
       />
 
-      {/* Delete Modal */}
       <DeleteConfirmModal
         open={showDelete}
         saving={saving}

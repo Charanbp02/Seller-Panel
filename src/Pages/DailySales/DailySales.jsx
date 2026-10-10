@@ -1,6 +1,6 @@
 // src/Pages/DailySales/DailySales.jsx
 import React, { useState, useEffect, useMemo } from 'react';
-import { ShoppingBag, Plus, Calendar } from 'lucide-react';
+import { ShoppingBag, Plus, Calendar, RefreshCw, Loader2 } from 'lucide-react';
 import { db } from '../../firebase/firebaseConfig';
 import {
   collection, doc, query, where, onSnapshot, getDocs, getDoc,
@@ -17,12 +17,17 @@ import {
   buildCascade, previewInvoice, showToast, safeTxGet
 } from './utils/salesHelpers';
 
+import { syncCashbookEntry } from '../../utils/cashbookSync';
+
 import SummaryCards from './widgets/SummaryCards';
 import SaleForm from './widgets/SaleForm';
 import SaleList from './widgets/SaleList';
 import SaleViewModal from './widgets/SaleViewModal';
 import PaymentModal from './widgets/PaymentModal';
 import DeleteConfirmModal from './widgets/DeleteConfirmModal';
+
+// 🆕 Migration banner state — remove this whole block after running once
+const MIGRATION_BANNER_ENABLED = true;
 
 const DailySales = () => {
   const [isAdding, setIsAdding] = useState(false);
@@ -35,6 +40,9 @@ const DailySales = () => {
   const [deleteId, setDeleteId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  const [migrating, setMigrating] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
 
   const [salesData, setSalesData] = useState([]);
   const [allPayments, setAllPayments] = useState([]);
@@ -173,7 +181,7 @@ const DailySales = () => {
   };
 
   // ============================================================
-  // SAVE SALE
+  // SAVE SALE  (with CASH-SALE AUTO-PAYMENT)
   // ============================================================
   const handleSave = async () => {
     if (!formData.customerName) return alert('Please enter customer name');
@@ -181,6 +189,13 @@ const DailySales = () => {
       return alert('Please fill all product details');
 
     setSaving(true);
+    let savedSaleId = null;       // captured inside tx
+    let autoPaymentId = null;     // captured inside tx (for cash sales)
+    let savedSaleData = null;
+    let savedCustomerName = null;
+    let savedInvoiceNumber = null;
+    let savedDate = null;
+
     try {
       const oldSale = isEditing ? salesData.find(s => s.id === editingId) : null;
       const customer = await resolveCustomer();
@@ -211,12 +226,10 @@ const DailySales = () => {
       });
 
       await runTransaction(db, async (tx) => {
-        // ============ PHASE A: ALL READS ============
         const stockSnaps = {};
         for (const [n, r] of Object.entries(refs.stockRefs)) {
           stockSnaps[n] = await safeTxGet(tx, r);
         }
-
         const customerSnap = await safeTxGet(tx, resolvedCustomerRef);
         const oldCustomerSnap = refs.oldCustomerRef
           ? await safeTxGet(tx, refs.oldCustomerRef)
@@ -226,10 +239,9 @@ const DailySales = () => {
           ? doc(db, 'daily_sales', editingId)
           : doc(collection(db, 'daily_sales'));
         const saleId = saleRef.id;
+        savedSaleId = saleId;
         const existingSnap = isEditing && editingId ? await safeTxGet(tx, saleRef) : null;
         const counterSnap = await safeTxGet(tx, counterRef);
-
-        // ============ PHASE B: ALL WRITES ============
 
         // Validation
         for (const name of Object.keys(newDelta)) {
@@ -252,6 +264,7 @@ const DailySales = () => {
           if (counterSnap?.exists()) tx.update(counterRef, { seq: increment(1), updatedAt: nowISO });
           else tx.set(counterRef, { seq: next, createdAt: nowISO, updatedAt: nowISO });
         }
+        savedInvoiceNumber = invoiceNumber;
 
         // Stock
         const touched = new Set([...Object.keys(oldDelta), ...Object.keys(newDelta)]);
@@ -287,6 +300,9 @@ const DailySales = () => {
           updatedAt: nowISO,
           createdAt: oldSale?.createdAt || nowISO
         };
+        savedSaleData = saleData;
+        savedCustomerName = saleData.customerName;
+        savedDate = saleData.date;
 
         if (isEditing && existingSnap?.exists()) tx.update(saleRef, saleData);
         else tx.set(saleRef, saleData);
@@ -303,13 +319,43 @@ const DailySales = () => {
           });
         }
 
-        // Customer ledger
+        // ✅ Cash sale → auto-create payment + ledger row inside tx
+        const isCashSale = CASH_MODES.has(formData.paymentMode);
+        let autoPayDoc = null;
+
+        if (isCashSale && Number(saleData.grandTotal) > 0 && !isEditing) {
+          const payRef = doc(collection(db, 'sales_payments'));
+          autoPaymentId = payRef.id;
+          autoPayDoc = {
+            saleId,
+            invoiceNumber,
+            customerId: resolvedCustomerId,
+            customerName: saleData.customerName,
+            amount: Number(saleData.grandTotal),
+            date: saleData.date,
+            mode: formData.paymentMode,
+            notes: 'Auto (cash sale)',
+            source: 'daily_sales',
+            autoGenerated: true,
+            createdAt: nowISO,
+            updatedAt: nowISO
+          };
+          tx.set(payRef, autoPayDoc);
+        }
+
         if (customerSnap?.exists()) {
           let txs = [...(customerSnap.data().transactions || [])];
           if (oldSale && !refs.customerChanged) {
             txs = removeSaleFromLedger(txs, oldSale);
           }
           txs.push(newRow);
+
+          if (autoPayDoc) {
+            txs.push(buildPaymentLedgerRow(
+              { id: autoPaymentId, ...autoPayDoc }, saleData, nowISO
+            ));
+          }
+
           tx.update(resolvedCustomerRef, {
             transactions: txs,
             currentOutstanding: computeOutstanding(txs),
@@ -319,18 +365,43 @@ const DailySales = () => {
             customerType: formData.customerType || customerSnap.data()?.customerType || 'hotel'
           });
         } else {
+          const initialTxs = [newRow];
+          if (autoPayDoc) {
+            initialTxs.push(buildPaymentLedgerRow(
+              { id: autoPaymentId, ...autoPayDoc }, saleData, nowISO
+            ));
+          }
           tx.set(resolvedCustomerRef, {
-            customerName: formData.customerName.trim(),
+            customerName: saleData.customerName,
             mobile: formData.customerPhone || '',
             address: formData.customerAddress || '',
             customerType: formData.customerType || 'hotel',
-            currentOutstanding: Number(saleData.grandTotal) || 0,
-            transactions: [newRow],
+            currentOutstanding: computeOutstanding(initialTxs),
+            transactions: initialTxs,
             createdAt: nowISO,
             updatedAt: nowISO
           });
         }
       });
+
+      // ✅ AFTER tx: write cashbook entry for the auto-payment
+      const isCashSale = CASH_MODES.has(formData.paymentMode);
+      if (isCashSale && autoPaymentId && Number(savedSaleData?.grandTotal) > 0) {
+        try {
+          await syncCashbookEntry({
+            date: savedDate,
+            type: 'sales',
+            amount: Number(savedSaleData.grandTotal),
+            paymentMode: formData.paymentMode,
+            description: `Sale ${savedInvoiceNumber} — ${savedCustomerName}`,
+            reference: savedInvoiceNumber,
+            source: 'sales_payments',          // same source as manual payments
+            sourceId: autoPaymentId
+          });
+        } catch (cbErr) {
+          console.warn('Cashbook sync failed (non-fatal):', cbErr.message);
+        }
+      }
 
       showToast(isEditing ? 'Sale updated successfully!' : 'Sale created successfully!');
       handleCancel();
@@ -370,8 +441,9 @@ const DailySales = () => {
       const cashbookRef = await findRefByName('cashbook', 'date', cashbookDate);
       const nowISO = new Date().toISOString();
 
+      let createdPaymentId = null;
+
       await runTransaction(db, async (tx) => {
-        // ============ PHASE A: ALL READS ============
         const saleRef = doc(db, 'daily_sales', sale.id);
         const saleSnap = await safeTxGet(tx, saleRef);
         if (!saleSnap?.exists()) throw new Error('Sale no longer exists');
@@ -379,7 +451,6 @@ const DailySales = () => {
         const customerSnap = customerRef ? await safeTxGet(tx, customerRef) : null;
         const cbSnap = cashbookRef ? await safeTxGet(tx, cashbookRef) : null;
 
-        // Later cashbook days (for cascade)
         let laterDays = [];
         try {
           const laterSnap = await tx.get(
@@ -392,7 +463,6 @@ const DailySales = () => {
           console.warn('laterDays fetch failed:', e.message);
         }
 
-        // Earlier cashbook days (only needed when creating a new day doc)
         let earlierClosing = 0;
         if (!cbSnap?.exists()) {
           try {
@@ -410,11 +480,9 @@ const DailySales = () => {
           }
         }
 
-        // ============ PHASE B: ALL WRITES ============
-
-        // Payment doc
         const paymentRef = doc(collection(db, 'sales_payments'));
         const paymentId = paymentRef.id;
+        createdPaymentId = paymentId;
         const paymentDoc = {
           saleId: sale.id,
           invoiceNumber: sale.invoiceNumber,
@@ -424,12 +492,12 @@ const DailySales = () => {
           date: paymentForm.date,
           mode: paymentForm.mode,
           notes: paymentForm.notes || '',
+          source: 'daily_sales',
           createdAt: nowISO,
           updatedAt: nowISO
         };
         tx.set(paymentRef, paymentDoc);
 
-        // Customer ledger
         const newLedgerRow = buildPaymentLedgerRow(
           { id: paymentId, ...paymentDoc }, sale, nowISO
         );
@@ -454,7 +522,7 @@ const DailySales = () => {
           });
         }
 
-        // Cashbook
+        // Cashbook (inline — kept for atomicity with the payment doc)
         if (CASH_MODES.has(paymentForm.mode)) {
           const entry = {
             type: 'sales',
@@ -530,7 +598,6 @@ const DailySales = () => {
       const nowISO = new Date().toISOString();
 
       await runTransaction(db, async (tx) => {
-        // ============ PHASE A: ALL READS ============
         const paymentRef = doc(db, 'sales_payments', payment.id);
         const paySnap = await safeTxGet(tx, paymentRef);
         if (!paySnap?.exists()) throw new Error('Payment already deleted');
@@ -550,7 +617,6 @@ const DailySales = () => {
           console.warn('laterDays fetch failed:', e.message);
         }
 
-        // ============ PHASE B: ALL WRITES ============
         tx.delete(paymentRef);
 
         if (customerSnap?.exists()) {
@@ -617,7 +683,6 @@ const DailySales = () => {
       }
 
       await runTransaction(db, async (tx) => {
-        // ============ PHASE A: ALL READS ============
         const stockSnaps = {};
         for (const [n, r] of Object.entries(stockRefs)) {
           stockSnaps[n] = await safeTxGet(tx, r);
@@ -645,11 +710,8 @@ const DailySales = () => {
         }
 
         const saleSnap = await safeTxGet(tx, doc(db, 'daily_sales', deleteId));
-
-        // ============ PHASE B: ALL WRITES ============
         const nowISO = new Date().toISOString();
 
-        // Restore stock
         const restore = {};
         (sale.products || []).forEach(p => {
           const base = stockMap[p.name]?.unit || p.unit || 'kg';
@@ -664,12 +726,10 @@ const DailySales = () => {
           });
         }
 
-        // Delete payments
         for (const p of payments) {
           if (p.ref) tx.delete(p.ref);
         }
 
-        // Customer ledger
         if (customerSnap?.exists()) {
           let txs = removeSaleFromLedger(customerSnap.data().transactions || [], sale);
           payments.forEach(p => { txs = removePaymentFromLedger(txs, p.id); });
@@ -680,7 +740,6 @@ const DailySales = () => {
           });
         }
 
-        // Cashbook per payment date
         for (const dt of paymentDates) {
           const ref = cashbookRefs[dt];
           const snap = cbSnaps[dt];
@@ -732,7 +791,9 @@ const DailySales = () => {
       invoiceNumber: sale.invoiceNumber || '',
       subtotal: sale.subtotal || 0,
       totalDiscount: sale.totalDiscount || 0,
-      grandTotal: sale.grandTotal || 0
+      grandTotal: sale.grandTotal || 0,
+      // default to credit when editing (no auto-payment on update)
+      paymentMode: 'credit'
     });
     setIsAdding(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -743,6 +804,66 @@ const DailySales = () => {
     setIsEditing(false);
     setEditingId(null);
     setFormData(emptySaleForm(selectedDate));
+  };
+
+  // ============================================================
+  // MIGRATION HANDLERS (TEMPORARY)
+  // ============================================================
+  const handlePreviewMigration = async () => {
+    setPreviewing(true);
+    try {
+      const mod = await import('../../scripts/migrateOldPayments');
+      const result = await mod.previewOldPayments();
+      alert(
+        `Preview Results:\n\n` +
+        `Old payments found: ${result.oldPayments}\n` +
+        `Real sales: ${result.realSales}\n` +
+        `Existing payments: ${result.existingPayments}\n\n` +
+        `Will apply to sale: ${result.willApplyToSale}\n` +
+        `Will be standalone: ${result.willBeStandalone}\n` +
+        `Will be skipped: ${result.willBeSkipped}\n` +
+        `Will be deleted: ${result.willDelete}\n\n` +
+        `Check browser console for details.`
+      );
+    } catch (e) {
+      console.error('Preview error:', e);
+      alert('Preview failed: ' + e.message);
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const handleRunMigration = async () => {
+    const ok = window.confirm(
+      'Run migration?\n\n' +
+      'This will:\n' +
+      '1. Read all old isPaymentOnly entries in daily_sales\n' +
+      '2. Convert them to sales_payments entries\n' +
+      '3. Apply them to matching sales where possible\n' +
+      '4. Delete the old entries\n\n' +
+      'This cannot be undone. Continue?'
+    );
+    if (!ok) return;
+
+    setMigrating(true);
+    try {
+      const mod = await import('../../scripts/migrateOldPayments');
+      const result = await mod.migrateOldPayments((msg) => console.log(msg));
+      alert(
+        `Migration Complete!\n\n` +
+        `Old payments processed: ${result.total}\n` +
+        `Applied to sales: ${result.created}\n` +
+        `Standalone payments: ${result.standalone}\n` +
+        `Skipped: ${result.skipped}\n` +
+        `Old entries deleted: ${result.deleted}\n\n` +
+        `Check Daily Sales table — pending balances should now be updated.`
+      );
+    } catch (e) {
+      console.error('Migration error:', e);
+      alert('Migration failed: ' + e.message);
+    } finally {
+      setMigrating(false);
+    }
   };
 
   const dateStatus = (() => {

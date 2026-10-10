@@ -19,6 +19,42 @@ import LowStockAlerts from './widgets/LowStockAlerts';
 import RecentActivity from './widgets/RecentActivity';
 import QuickActions from './widgets/QuickActions';
 
+// ============================================================
+// EXPENSE CLASSIFIER — matches the Cashbook backfill logic
+// ============================================================
+const INVEST_KEYWORDS = [
+  'ingredient', 'flour', 'rice', 'sugar', 'salt', 'oil', 'ghee', 'masala',
+  'spice', 'dal', 'gram', 'wheat', 'maida', 'raw material',
+  'packing', 'cover', 'box', 'bag', 'label', 'sticker', 'carton', 'wrapper',
+  'machine', 'equipment', 'tool', 'vehicle', 'furniture', 'asset',
+  'production', 'manufacturing', 'stock', 'material',
+  'ಹಿಟ್ಟು', 'ಅಕ್ಕಿ', 'ಸಕ್ಕರೆ', 'ಉಪ್ಪು', 'ಎಣ್ಣೆ', 'ತುಪ್ಪ', 'ಮಸಾಲೆ', 'ಪದಾರ್ಥ',
+  'ಬೇಳೆ', 'ಗೋಧಿ', 'ಮೈದಾ', 'ಪ್ಯಾಕಿಂಗ್', 'ಡಬ್ಬ', 'ಚೀಲ', 'ಯಂತ್ರ', 'ಉಪಕರಣ',
+];
+
+const EXPENSE_KEYWORDS = [
+  'travel', 'trip', 'fuel', 'petrol', 'diesel', 'transport', 'bus', 'taxi',
+  'salary', 'wages', 'labour', 'labor', 'staff',
+  'rent', 'electricity', 'water', 'internet', 'phone', 'recharge',
+  'maintenance', 'repair', 'service', 'cleaning',
+  'marketing', 'advertising', 'office', 'stationery', 'printing',
+  'tax', 'gst', 'insurance', 'license', 'fees',
+  'medical', 'food', 'tea', 'coffee', 'snacks',
+  'ಪ್ರಯಾಣ', 'ಪೆಟ್ರೋಲ್', 'ಸಂಬಳ', 'ಕೂಲಿ', 'ಬಾಡಿಗೆ', 'ಕರೆಂಟ್', 'ವಿದ್ಯುತ್',
+  'ದುರಸ್ತಿ', 'ಜಾಹೀರಾತು', 'ಕಚೇರಿ', 'ತೆರಿಗೆ', 'ವಿಮೆ', 'ಊಟ', 'ತಿಂಡಿ',
+];
+
+const classifyExpenseDesc = (x) => {
+  const desc = String(x.description || x.notes || x.category || '').toLowerCase();
+  for (const kw of EXPENSE_KEYWORDS) {
+    if (desc.includes(kw.toLowerCase())) return 'expense';
+  }
+  for (const kw of INVEST_KEYWORDS) {
+    if (desc.includes(kw.toLowerCase())) return 'investment';
+  }
+  return 'expense';
+};
+
 // ★ Filter out payment-only entries from daily_sales
 const isRealSale = (d) => {
   const x = d.data ? d.data() : d;
@@ -34,6 +70,7 @@ const Dashboard = () => {
 
   const fetchInFlight = useRef(false);
   const lastFetchRef = useRef(0);
+  const hasFetchedOnce = useRef(false);
 
   // Raw numeric refs for cross-listener math
   const salesRef = useRef(0);
@@ -76,7 +113,6 @@ const Dashboard = () => {
         change: changeLabel(d.expenses, d.yExpenses),
         subtitle: `vs yesterday ${changeLabel(d.expenses, d.yExpenses)} ${fmt2(d.expenses - d.yExpenses)}`
       },
-      // ★ id must match STATS_CONFIG: 'gross-margin'
       'gross-margin': {
         value: fmt2(profit),
         change: changeLabel(profit, yProfit),
@@ -99,7 +135,7 @@ const Dashboard = () => {
       },
       'total-investment': {
         value: d.investment > 0 ? fmt2(d.investment) : '—',
-        subtitle: ''
+        subtitle: 'Assets + Packing + Ingredients + Investment-classified expenses'
       },
       'total-assets': {
         value: d.assets > 0 ? fmt2(d.assets) : '—',
@@ -133,7 +169,7 @@ const Dashboard = () => {
   }, []);
 
   // ============================================================
-  // COLLECTION — query sales_payments by payment date
+  // COLLECTION
   // ============================================================
   const computeCollection = useCallback(async (dateStr) => {
     let received = 0, cash = 0, upi = 0, bank = 0, count = 0;
@@ -163,8 +199,11 @@ const Dashboard = () => {
   // FETCH
   // ============================================================
   const fetchData = useCallback(async (force = false) => {
-    if (fetchInFlight.current) return;
-    if (!force && Date.now() - lastFetchRef.current < 30000) return;
+    if (fetchInFlight.current) {
+      console.log('⏳ Fetch already in progress, skipping');
+      return;
+    }
+    if (!force && Date.now() - lastFetchRef.current < 5000) return;
 
     fetchInFlight.current = true;
     setIsFetching(true);
@@ -193,11 +232,10 @@ const Dashboard = () => {
         safe(getDocs(collection(db, 'assets')))
       ]);
 
-      // ★ Filter real sales only (exclude payment-only entries)
       const realSalesDocs = salesS.docs.filter(isRealSale);
       const realYSalesDocs = ySalesS.docs.filter(isRealSale);
 
-      // ---- Recent sales (5 most recent by date) — real sales only ----
+      // Recent sales
       const recentSalesSnap = await safe(
         getDocs(query(
           collection(db, 'daily_sales'),
@@ -209,7 +247,6 @@ const Dashboard = () => {
         .filter(isRealSale)
         .slice(0, 5);
 
-      // ---- Fetch all payments for those recent sales ----
       let recentPayments = [];
       if (recentRealSales.length > 0) {
         const ids = recentRealSales.map(d => d.id);
@@ -232,11 +269,27 @@ const Dashboard = () => {
       const collection_ = await computeCollection(selectedDate);
       const { received, cash, upi, bank, count: todayPaymentCount } = collection_;
 
-      // ★ Sales — real sales only
       const sales = realSalesDocs.reduce((s, d) => s + (Number(d.data().grandTotal) || 0), 0);
       const ySales = realYSalesDocs.reduce((s, d) => s + (Number(d.data().grandTotal) || 0), 0);
-      const expenses = expS.docs.reduce((s, d) => s + (Number(d.data().amount) || 0), 0);
-      const yExpenses = yExpS.docs.reduce((s, d) => s + (Number(d.data().amount) || 0), 0);
+
+      // ★ Split expenses into Expense vs Investment
+      let expenses = 0;
+      let investFromExpenses = 0;
+      expS.docs.forEach(d => {
+        const x = d.data();
+        const amt = Number(x.amount) || 0;
+        if (amt <= 0) return;
+        if (classifyExpenseDesc(x) === 'investment') investFromExpenses += amt;
+        else expenses += amt;
+      });
+
+      let yExpenses = 0;
+      yExpS.docs.forEach(d => {
+        const x = d.data();
+        const amt = Number(x.amount) || 0;
+        if (amt <= 0) return;
+        if (classifyExpenseDesc(x) === 'expense') yExpenses += amt;
+      });
 
       salesRef.current = sales; expRef.current = expenses;
       ySalesRef.current = ySales; yExpRef.current = yExpenses;
@@ -269,7 +322,7 @@ const Dashboard = () => {
       const production = prodS.docs.reduce((s, d) => s + (Number(d.data().produced) || 0), 0);
       const productionItems = prodS.size;
 
-      // Finished stock
+      // Finished
       const finishedDetail = finS.docs.map(d => {
         const x = d.data();
         return {
@@ -296,8 +349,19 @@ const Dashboard = () => {
         });
       });
 
-      const investment = invS.docs.reduce((s, d) => s + (Number(d.data().investment) || 0), 0);
-      const assets = astS.docs.reduce((s, d) => s + totalAssetValue(d), 0);
+      // ★ Investment = assets + packing + ingredients + investment-classified expenses
+      const assetsValue = astS.docs.reduce((s, d) => s + totalAssetValue(d), 0);
+      const packingValue = packS.docs.reduce((s, d) => {
+        const x = d.data();
+        return s + (x.purchases || []).reduce((ps, p) => ps + (Number(p.amount) || 0), 0);
+      }, 0);
+      const ingredientValue = ingS.docs.reduce((s, d) => {
+        const x = d.data();
+        return s + (x.purchases || []).reduce((ps, p) => ps + (Number(p.amount) || 0), 0);
+      }, 0);
+
+      const investment = assetsValue + packingValue + ingredientValue + investFromExpenses;
+      const assets = assetsValue;
       const assetCount = astS.docs.reduce((s, d) => s + (Number(d.data().quantity) || 1), 0);
 
       const transactions = recentRealSales.map(d =>
@@ -320,6 +384,7 @@ const Dashboard = () => {
         ]
       });
 
+      hasFetchedOnce.current = true;
       lastFetchRef.current = Date.now();
       setLastFetchTime(lastFetchRef.current);
     } catch (e) {
@@ -342,7 +407,7 @@ const Dashboard = () => {
     const debounce = (fn, ms = 400) => { clearTimeout(timer); timer = setTimeout(fn, ms); };
     const unsubs = [];
 
-    // Payments for the selected date
+    // Payments
     unsubs.push(onSnapshot(
       query(collection(db, 'sales_payments'), where('date', '==', selectedDate)),
       (snap) => debounce(() => {
@@ -382,7 +447,7 @@ const Dashboard = () => {
       (e) => console.log('⚠️ payments listener:', e.message)
     ));
 
-    // Sales (sale date) — filter out payment-only entries
+    // Sales
     unsubs.push(onSnapshot(
       query(collection(db, 'daily_sales'), where('date', '==', selectedDate)),
       (snap) => debounce(() => {
@@ -405,7 +470,6 @@ const Dashboard = () => {
             change: changeLabel(sales, ySalesRef.current),
             subtitle: `${realCount} orders • vs yesterday ${changeLabel(sales, ySalesRef.current)} ${fmt2(sales - ySalesRef.current)}`
           },
-          // ★ 'gross-margin' — matches STATS_CONFIG id
           'gross-margin': {
             value: fmt2(profit),
             change: changeLabel(profit, yProfit),
@@ -416,11 +480,17 @@ const Dashboard = () => {
       (e) => console.log('⚠️ sales listener:', e.message)
     ));
 
-    // Expenses
+    // Expenses — ★ now split by classifier
     unsubs.push(onSnapshot(
       query(collection(db, 'expenses'), where('date', '==', selectedDate)),
       (snap) => debounce(() => {
-        const expenses = snap.docs.reduce((s, d) => s + (Number(d.data().amount) || 0), 0);
+        let expenses = 0;
+        snap.docs.forEach(d => {
+          const x = d.data();
+          const amt = Number(x.amount) || 0;
+          if (amt <= 0) return;
+          if (classifyExpenseDesc(x) === 'expense') expenses += amt;
+        });
         expRef.current = expenses;
         const profit = salesRef.current - expenses;
         const yProfit = ySalesRef.current - yExpRef.current;
@@ -431,7 +501,6 @@ const Dashboard = () => {
             change: changeLabel(expenses, yExpRef.current),
             subtitle: `vs yesterday ${changeLabel(expenses, yExpRef.current)} ${fmt2(expenses - yExpRef.current)}`
           },
-          // ★ 'gross-margin' — matches STATS_CONFIG id
           'gross-margin': {
             value: fmt2(profit),
             change: changeLabel(profit, yProfit),
@@ -442,7 +511,7 @@ const Dashboard = () => {
       (e) => console.log('⚠️ expenses listener:', e.message)
     ));
 
-    // Customers (outstanding)
+    // Customers
     unsubs.push(onSnapshot(collection(db, 'customers'), (snap) => debounce(() => {
       let o = 0, p = 0;
       snap.docs.forEach(d => {
@@ -498,27 +567,26 @@ const Dashboard = () => {
       setAlerts(p => [...p.filter(a => a.category !== 'Packing'), ...list]);
     }), (e) => console.log('⚠️ packing listener:', e.message)));
 
-    // Investments
-    unsubs.push(onSnapshot(collection(db, 'investments'), (snap) => debounce(() => {
-      const total = snap.docs.reduce((s, d) => s + (Number(d.data().investment) || 0), 0);
-      setFinancialValues(p => ({
-        ...p,
-        'total-investment': { ...(p['total-investment'] || {}), value: total > 0 ? fmt2(total) : '—' }
-      }));
+    // Investments — ★ recalc from assets + packing + ingredients + classified expenses
+    unsubs.push(onSnapshot(collection(db, 'investments'), (snap) => debounce(async () => {
+      // Re-fetch to recompute total (cheap since data is cached by Firestore)
+      fetchData(true);
     }), (e) => console.log('⚠️ investments listener:', e.message)));
 
     // Assets
-    unsubs.push(onSnapshot(collection(db, 'assets'), (snap) => debounce(() => {
-      const total = snap.docs.reduce((s, d) => s + totalAssetValue(d), 0);
+    unsubs.push(onSnapshot(collection(db, 'assets'), (snap) => debounce(async () => {
+      const assetsValue = snap.docs.reduce((s, d) => s + totalAssetValue(d), 0);
       const count = snap.docs.reduce((s, d) => s + (Number(d.data().quantity) || 1), 0);
       setFinancialValues(p => ({
         ...p,
         'total-assets': {
           ...(p['total-assets'] || {}),
-          value: total > 0 ? fmt2(total) : '—',
+          value: assetsValue > 0 ? fmt2(assetsValue) : '—',
           subtitle: `${count} items`
         }
       }));
+      // Recompute total investment too
+      fetchData(true);
     }), (e) => console.log('⚠️ assets listener:', e.message)));
 
     // Production

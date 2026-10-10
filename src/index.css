@@ -20,3 +20,48 @@
 ::-webkit-scrollbar-thumb:hover {
     background: #a8a8a8;
 }
+
+
+/* ============================================================
+   RESUME PRINT STYLES
+   ============================================================ */
+@media print {
+  /* Hide everything except the resume */
+  body.printing-resume * {
+    visibility: hidden;
+  }
+
+  body.printing-resume #resume-print-area,
+  body.printing-resume #resume-print-area * {
+    visibility: visible;
+  }
+
+  body.printing-resume #resume-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 210mm;       /* A4 width */
+    min-height: 297mm;  /* A4 height */
+    padding: 15mm;
+    margin: 0;
+    box-shadow: none;
+    border: none;
+  }
+
+  /* Page setup */
+  @page {
+    size: A4;
+    margin: 0;
+  }
+
+  /* Prevent page breaks inside blocks */
+  #resume-print-area section {
+    page-break-inside: avoid;
+  }
+
+  /* Colors print correctly */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}

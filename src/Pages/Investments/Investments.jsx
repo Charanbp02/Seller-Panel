@@ -1,13 +1,13 @@
 // Pages/Investments/Investments.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   TrendingUp, Plus, Search, Calendar, Edit, Trash2, Eye, FileText,
-  DollarSign, Save, RefreshCw, X, AlertTriangle, Wallet, Building2,
-  PiggyBank, Package, Box, Banknote, Smartphone, CreditCard, Tag, Receipt
+  Save, RefreshCw, X, AlertTriangle, Wallet, Building2, PiggyBank,
+  Package, Box, Banknote, Smartphone, CreditCard, Loader2
 } from 'lucide-react';
 import { db } from '../../firebase/firebaseConfig';
 import {
-  collection, doc, addDoc, updateDoc, deleteDoc, query, orderBy, onSnapshot
+  collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot
 } from 'firebase/firestore';
 import { syncCashbookEntry } from '../../utils/cashbookSync';
 
@@ -30,13 +30,97 @@ const PAYMENT_MODES = [
 
 const CASH_MODES = new Set(['cash', 'upi', 'bank']);
 
-const emptyForm = () => ({
-  date: localDate(),
-  assets: '', packing: '', ingredients: '', expenses: '',
-  investment: '', selling: '', totalBalance: '',
+const emptyForm = (date) => ({
+  date: date || localDate(),
   paymentMode: 'cash',
   notes: ''
 });
+
+// Cost of a single row (today's actual spend, NOT running investment)
+const rowCosts = (row) =>
+  num(row?.assets) + num(row?.packing) + num(row?.ingredients) + num(row?.expenses);
+
+// ============================================================
+// Extract date from various field names
+// ============================================================
+const getRowDate = (x) => {
+  if (!x) return '';
+  const v = x.date || x.purchaseDate || x.createdAt || '';
+  if (typeof v === 'string') return v.slice(0, 10);
+  if (v?.toDate) return localDate(v.toDate());
+  if (v instanceof Date) return localDate(v);
+  return '';
+};
+
+// ============================================================
+// Compute per-day aggregates from raw collections
+// ============================================================
+const computeDailyAggregates = ({ assets, packing, ingredients, expenses, payments }) => {
+  const byDate = {};
+
+  const ensure = (d) => {
+    if (!byDate[d]) {
+      byDate[d] = { assets: 0, packing: 0, ingredients: 0, expenses: 0, selling: 0 };
+    }
+    return byDate[d];
+  };
+
+  assets.forEach((row) => {
+    const x = row.data ? row.data() : row;
+    const d = getRowDate(x);
+    if (!d) return;
+    const value = num(x.purchasePrice) * (num(x.quantity) || 1);
+    ensure(d).assets += value;
+  });
+
+  packing.forEach((row) => {
+    const x = row.data ? row.data() : row;
+    (x.purchases || []).forEach(p => {
+      const d = getRowDate(p);
+      if (!d) return;
+      ensure(d).packing += num(p.amount);
+    });
+  });
+
+  ingredients.forEach((row) => {
+    const x = row.data ? row.data() : row;
+    (x.purchases || []).forEach(p => {
+      const d = getRowDate(p);
+      if (!d) return;
+      ensure(d).ingredients += num(p.amount);
+    });
+  });
+
+  expenses.forEach((row) => {
+    const x = row.data ? row.data() : row;
+    const d = getRowDate(x);
+    if (!d) return;
+    ensure(d).expenses += num(x.amount);
+  });
+
+  payments.forEach((row) => {
+    const x = row.data ? row.data() : row;
+    const d = getRowDate(x);
+    if (!d) return;
+    ensure(d).selling += num(x.amount);
+  });
+
+  return byDate;
+};
+
+// ============================================================
+// Compute running Investment + Total Balance across dates
+// ============================================================
+const computeRunningBalance = (rowsAsc) => {
+  let runningTB = 0;
+  return rowsAsc.map((r, idx) => {
+    const costs = rowCosts(r);
+    const investment = idx === 0 ? costs : runningTB + costs;
+    const totalBalance = investment - num(r.selling);
+    runningTB = totalBalance;
+    return { ...r, costs, investment, totalBalance };
+  });
+};
 
 // ============================================================
 // COMPONENT
@@ -52,139 +136,234 @@ const Investments = () => {
   const [deleteId, setDeleteId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [investmentData, setInvestmentData] = useState([]);
+
+  const [rawAssets, setRawAssets] = useState([]);
+  const [rawPacking, setRawPacking] = useState([]);
+  const [rawIngredients, setRawIngredients] = useState([]);
+  const [rawExpenses, setRawExpenses] = useState([]);
+  const [rawPayments, setRawPayments] = useState([]);
+  const [rawMeta, setRawMeta] = useState([]);
+  const [collectionsLoaded, setCollectionsLoaded] = useState({
+    assets: false, packing: false, ingredients: false,
+    expenses: false, payments: false, meta: false
+  });
+
   const [formData, setFormData] = useState(emptyForm());
 
   const patchForm = (patch) => setFormData(p => ({ ...p, ...patch }));
 
-  // ---------- Live listener ----------
+  // ============================================================
+  // LISTENERS — 6 collections
+  // ============================================================
   useEffect(() => {
-    const q = query(collection(db, 'investments'), orderBy('date', 'desc'));
-    const unsub = onSnapshot(q, (snap) => {
-      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      rows.sort((a, b) => {
-        const d = (b.date || '').localeCompare(a.date || '');
-        if (d !== 0) return d;
-        return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
-      });
-      setInvestmentData(rows);
-      setLoading(false);
-    }, (e) => { console.error('investments listener:', e); setLoading(false); });
-    return () => unsub();
+    const subs = [];
+
+    subs.push(onSnapshot(collection(db, 'assets'), (snap) => {
+      setRawAssets(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setCollectionsLoaded(p => ({ ...p, assets: true }));
+    }, (e) => { console.warn('assets:', e.message); setCollectionsLoaded(p => ({ ...p, assets: true })); }));
+
+    subs.push(onSnapshot(collection(db, 'packingMaterials'), (snap) => {
+      setRawPacking(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setCollectionsLoaded(p => ({ ...p, packing: true }));
+    }, (e) => { console.warn('packing:', e.message); setCollectionsLoaded(p => ({ ...p, packing: true })); }));
+
+    subs.push(onSnapshot(collection(db, 'ingredients'), (snap) => {
+      setRawIngredients(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setCollectionsLoaded(p => ({ ...p, ingredients: true }));
+    }, (e) => { console.warn('ingredients:', e.message); setCollectionsLoaded(p => ({ ...p, ingredients: true })); }));
+
+    subs.push(onSnapshot(collection(db, 'expenses'), (snap) => {
+      setRawExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setCollectionsLoaded(p => ({ ...p, expenses: true }));
+    }, (e) => { console.warn('expenses:', e.message); setCollectionsLoaded(p => ({ ...p, expenses: true })); }));
+
+    subs.push(onSnapshot(collection(db, 'sales_payments'), (snap) => {
+      setRawPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setCollectionsLoaded(p => ({ ...p, payments: true }));
+    }, (e) => { console.warn('payments:', e.message); setCollectionsLoaded(p => ({ ...p, payments: true })); }));
+
+    subs.push(onSnapshot(collection(db, 'investments'), (snap) => {
+      setRawMeta(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setCollectionsLoaded(p => ({ ...p, meta: true }));
+    }, (e) => { console.warn('investments meta:', e.message); setCollectionsLoaded(p => ({ ...p, meta: true })); }));
+
+    return () => subs.forEach(u => { try { u(); } catch {} });
   }, []);
 
-  // ---------- Auto-recalc total ----------
-  const recomputeTotal = (form) => {
-    return ['assets', 'packing', 'ingredients', 'expenses', 'investment', 'selling']
-      .reduce((s, k) => s + (parseFloat(form[k]) || 0), 0);
-  };
+  useEffect(() => {
+    const all = Object.values(collectionsLoaded).every(Boolean);
+    if (all) setLoading(false);
+  }, [collectionsLoaded]);
 
-  const handleFieldChange = (field, value) => {
-    const next = { ...formData, [field]: value };
-    next.totalBalance = recomputeTotal(next).toString();
-    setFormData(next);
-  };
+  // ============================================================
+  // COMPUTED
+  // ============================================================
+  const investmentData = useMemo(() => {
+    const byDate = computeDailyAggregates({
+      assets: rawAssets,
+      packing: rawPacking,
+      ingredients: rawIngredients,
+      expenses: rawExpenses,
+      payments: rawPayments
+    });
 
-  // ---------- SAVE ----------
+    rawMeta.forEach(m => {
+      const d = m.date;
+      if (!d) return;
+      if (!byDate[d]) {
+        byDate[d] = { assets: 0, packing: 0, ingredients: 0, expenses: 0, selling: 0 };
+      }
+      byDate[d].paymentMode = m.paymentMode || 'cash';
+      byDate[d].notes = m.notes || '';
+      byDate[d].metaId = m.id;
+    });
+
+    const sortedDates = Object.keys(byDate).sort();
+    const rowsAsc = sortedDates.map(d => ({ date: d, ...byDate[d] }));
+
+    const computed = computeRunningBalance(rowsAsc);
+    return computed.reverse();
+  }, [rawAssets, rawPacking, rawIngredients, rawExpenses, rawPayments, rawMeta]);
+
+  // Preview for current form
+  const formPreview = useMemo(() => {
+    const byDate = computeDailyAggregates({
+      assets: rawAssets,
+      packing: rawPacking,
+      ingredients: rawIngredients,
+      expenses: rawExpenses,
+      payments: rawPayments
+    });
+
+    const today = byDate[formData.date] || {
+      assets: 0, packing: 0, ingredients: 0, expenses: 0, selling: 0
+    };
+
+    const priorRows = investmentData
+      .filter(r => r.date < formData.date)
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+    const prevTB = priorRows.length > 0 ? num(priorRows[0].totalBalance) : 0;
+
+    const costs = rowCosts(today);
+    const investment = prevTB + costs;
+    const totalBalance = investment - num(today.selling);
+
+    return { ...today, costs, investment, totalBalance, prevTB };
+  }, [formData.date, investmentData, rawAssets, rawPacking, rawIngredients, rawExpenses, rawPayments]);
+
+  // ============================================================
+  // SAVE — metadata + cashbook sync (using TODAY'S COSTS)
+  // ============================================================
   const handleAdd = async () => {
     if (!formData.date) return alert('Please select a date');
     setSaving(true);
     try {
+      const existing = rawMeta.find(m => m.date === formData.date);
       const payload = {
         date: formData.date,
-        assets: parseFloat(formData.assets) || 0,
-        packing: parseFloat(formData.packing) || 0,
-        ingredients: parseFloat(formData.ingredients) || 0,
-        expenses: parseFloat(formData.expenses) || 0,
-        investment: parseFloat(formData.investment) || 0,
-        selling: parseFloat(formData.selling) || 0,
-        totalBalance: parseFloat(formData.totalBalance) || 0,
         paymentMode: formData.paymentMode || 'cash',
         notes: formData.notes || '',
-        createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
 
-      const ref = await addDoc(collection(db, 'investments'), payload);
+      let docId;
+      if (existing) {
+        await updateDoc(doc(db, 'investments', existing.id), payload);
+        docId = existing.id;
+      } else {
+        const ref = await addDoc(collection(db, 'investments'), {
+          ...payload,
+          createdAt: new Date().toISOString()
+        });
+        docId = ref.id;
+      }
 
-      // ✅ Sync to cashbook — investment amount only
-      await syncCashbookEntry({
-        date: payload.date,
-        type: 'investment',
-        amount: payload.investment,
-        paymentMode: payload.paymentMode,
-        description: `Investment — ${payload.notes || payload.date}`,
-        source: 'investments',
-        sourceId: ref.id,
-        reference: ''
-      });
+      // ✅ Cashbook uses TODAY'S COSTS (not running investment total)
+      const investmentAmount = formPreview.costs;
+      if (CASH_MODES.has(payload.paymentMode) && investmentAmount > 0) {
+        await syncCashbookEntry({
+          date: payload.date,
+          type: 'investment',
+          amount: investmentAmount,
+          paymentMode: payload.paymentMode,
+          description: `Investment — ${payload.notes || payload.date}`,
+          source: 'investments',
+          sourceId: docId,
+          reference: ''
+        });
+      }
 
-      showToast('Investment added & Cashbook synced!');
+      showToast('Investment saved & Cashbook synced!');
       handleCancel();
     } catch (e) {
-      console.error('add investment:', e);
-      alert('Failed to add investment: ' + (e.message || 'Unknown error'));
+      console.error('save investment:', e);
+      alert('Failed to save: ' + (e.message || 'Unknown error'));
     } finally {
       setSaving(false);
     }
   };
 
   const handleUpdate = async () => {
-    if (!formData.date) return alert('Please select a date');
-    if (!editingId) return alert('No investment selected');
-
+    if (!editingId && !formData.date) return alert('No entry selected');
     setSaving(true);
     try {
-      const old = investmentData.find(i => i.id === editingId);
-      if (!old) throw new Error('Investment not found');
+      const oldMeta = rawMeta.find(m => m.id === editingId || m.date === formData.date);
+      const oldRow = investmentData.find(i => i.metaId === (oldMeta?.id) || i.date === oldMeta?.date);
 
       const payload = {
         date: formData.date,
-        assets: parseFloat(formData.assets) || 0,
-        packing: parseFloat(formData.packing) || 0,
-        ingredients: parseFloat(formData.ingredients) || 0,
-        expenses: parseFloat(formData.expenses) || 0,
-        investment: parseFloat(formData.investment) || 0,
-        selling: parseFloat(formData.selling) || 0,
-        totalBalance: parseFloat(formData.totalBalance) || 0,
         paymentMode: formData.paymentMode || 'cash',
         notes: formData.notes || '',
         updatedAt: new Date().toISOString()
       };
 
-      await updateDoc(doc(db, 'investments', editingId), payload);
+      let finalDocId = oldMeta?.id || null;
 
-      // ✅ Reverse old cashbook entry (if exists) then add new
-      const oldDate = old.date;
-      const oldMode = old.paymentMode || 'cash';
-      const oldAmount = num(old.investment);
-      const oldDateChanged = oldDate !== payload.date;
-      const oldModeChanged = oldMode !== payload.paymentMode;
-
-      // Always remove previous entry (source-based cleanup)
-      if (CASH_MODES.has(oldMode)) {
-        await syncCashbookEntry({
-          date: oldDate, type: 'investment', amount: oldAmount,
-          paymentMode: oldMode, source: 'investments', sourceId: editingId,
-          mode: 'remove'
+      if (oldMeta) {
+        await updateDoc(doc(db, 'investments', oldMeta.id), payload);
+      } else {
+        const ref = await addDoc(collection(db, 'investments'), {
+          ...payload,
+          createdAt: new Date().toISOString()
         });
+        finalDocId = ref.id;
       }
 
-      // Add new (if cash mode)
-      if (CASH_MODES.has(payload.paymentMode) && payload.investment > 0) {
+      // ---- Remove OLD cashbook entry (by source+sourceId) ----
+      if (oldMeta) {
+        const oldCosts = rowCosts(oldRow);
+        const oldMode = oldMeta.paymentMode || 'cash';
+        if (CASH_MODES.has(oldMode) && oldCosts > 0) {
+          await syncCashbookEntry({
+            date: oldMeta.date,
+            source: 'investments',
+            sourceId: oldMeta.id,
+            mode: 'remove'
+          });
+        }
+      }
+
+      // ---- Add NEW cashbook entry (today's costs) ----
+      const newCosts = formPreview.costs;
+      if (CASH_MODES.has(payload.paymentMode) && newCosts > 0 && finalDocId) {
         await syncCashbookEntry({
-          date: payload.date, type: 'investment', amount: payload.investment,
+          date: payload.date,
+          type: 'investment',
+          amount: newCosts,
           paymentMode: payload.paymentMode,
           description: `Investment — ${payload.notes || payload.date}`,
-          source: 'investments', sourceId: editingId
+          source: 'investments',
+          sourceId: finalDocId
         });
       }
 
-      showToast('Investment updated & Cashbook synced!');
+      showToast('Investment updated!');
       handleCancel();
     } catch (e) {
       console.error('update investment:', e);
-      alert('Failed to update investment: ' + (e.message || 'Unknown error'));
+      alert('Failed: ' + (e.message || 'Unknown error'));
     } finally {
       setSaving(false);
     }
@@ -194,44 +373,42 @@ const Investments = () => {
     if (!deleteId) return;
     setSaving(true);
     try {
-      const inv = investmentData.find(i => i.id === deleteId);
-      if (!inv) throw new Error('Investment not found');
+      const meta = rawMeta.find(m => m.id === deleteId);
+      if (!meta) throw new Error('Entry not found');
+
+      const row = investmentData.find(i => i.metaId === deleteId);
+      const costs = rowCosts(row);
 
       await deleteDoc(doc(db, 'investments', deleteId));
 
-      // ✅ Reverse cashbook
-      if (CASH_MODES.has(inv.paymentMode) && num(inv.investment) > 0) {
+      if (CASH_MODES.has(meta.paymentMode) && costs > 0) {
         await syncCashbookEntry({
-          date: inv.date, type: 'investment', amount: num(inv.investment),
-          paymentMode: inv.paymentMode, source: 'investments',
-          sourceId: deleteId, mode: 'remove'
+          date: meta.date,
+          source: 'investments',
+          sourceId: deleteId,
+          mode: 'remove'
         });
       }
 
       setShowDeleteModal(false);
       setDeleteId(null);
-      showToast('Investment deleted & Cashbook reversed!');
+      showToast('Investment metadata removed!');
     } catch (e) {
       console.error('delete investment:', e);
-      alert('Failed to delete investment: ' + (e.message || 'Unknown error'));
+      alert('Failed: ' + (e.message || 'Unknown error'));
     } finally {
       setSaving(false);
     }
   };
 
-  // ---------- FORM HANDLERS ----------
+  // ============================================================
+  // FORM HANDLERS
+  // ============================================================
   const handleEdit = (item) => {
     setIsEditing(true);
-    setEditingId(item.id);
+    setEditingId(item.metaId || null);
     setFormData({
       date: item.date || localDate(),
-      assets: item.assets?.toString() || '',
-      packing: item.packing?.toString() || '',
-      ingredients: item.ingredients?.toString() || '',
-      expenses: item.expenses?.toString() || '',
-      investment: item.investment?.toString() || '',
-      selling: item.selling?.toString() || '',
-      totalBalance: item.totalBalance?.toString() || '',
       paymentMode: item.paymentMode || 'cash',
       notes: item.notes || ''
     });
@@ -254,10 +431,12 @@ const Investments = () => {
     setTimeout(() => el.remove(), 3000);
   };
 
-  // ---------- DERIVED ----------
+  // ============================================================
+  // DERIVED
+  // ============================================================
   const filteredData = investmentData.filter(item =>
     item.date?.includes(searchTerm) ||
-    item.notes?.toLowerCase().includes(searchTerm.toLowerCase())
+    (item.notes || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const totals = investmentData.reduce((acc, item) => {
@@ -265,25 +444,32 @@ const Investments = () => {
     acc.packing += num(item.packing);
     acc.ingredients += num(item.ingredients);
     acc.expenses += num(item.expenses);
+    acc.costs += num(item.costs);
     acc.investment += num(item.investment);
     acc.selling += num(item.selling);
     acc.totalBalance += num(item.totalBalance);
     return acc;
-  }, { assets: 0, packing: 0, ingredients: 0, expenses: 0, investment: 0, selling: 0, totalBalance: 0 });
+  }, { assets: 0, packing: 0, ingredients: 0, expenses: 0, costs: 0, investment: 0, selling: 0, totalBalance: 0 });
+
+  const latestBalance = investmentData.length > 0
+    ? num(investmentData[0].totalBalance)
+    : 0;
 
   const summaryCards = [
     { label: 'Total Assets', value: fmt(totals.assets), Icon: Building2, bg: 'bg-blue-50', color: 'text-blue-600' },
     { label: 'Total Investment', value: fmt(totals.investment), Icon: PiggyBank, bg: 'bg-purple-50', color: 'text-purple-600' },
     { label: 'Total Selling', value: fmt(totals.selling), Icon: TrendingUp, bg: 'bg-emerald-50', color: 'text-emerald-600' },
-    { label: 'Total Balance', value: fmt(totals.totalBalance), Icon: Wallet, bg: 'bg-amber-50', color: 'text-amber-600' }
+    { label: 'Current Balance', value: fmt(latestBalance), Icon: Wallet, bg: 'bg-amber-50', color: 'text-amber-600' }
   ];
 
-  // ---------- RENDER ----------
+  // ============================================================
+  // RENDER
+  // ============================================================
   if (loading) return (
     <div className="min-h-[60vh] flex items-center justify-center">
       <div className="text-center">
         <div className="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto mb-4" />
-        <p className="text-gray-500">Loading investments...</p>
+        <p className="text-gray-500">Loading investment data...</p>
       </div>
     </div>
   );
@@ -309,7 +495,7 @@ const Investments = () => {
             </div>
             <div>
               <h1 className="text-xl md:text-2xl font-bold text-white">Investments</h1>
-              <p className="text-indigo-100 text-sm">Auto-syncs to Cashbook</p>
+              <p className="text-indigo-100 text-sm">Auto-synced from all modules</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -319,14 +505,21 @@ const Investments = () => {
                 className="bg-transparent outline-none text-sm text-white w-32 [color-scheme:dark]" />
             </div>
             <button
-              onClick={() => { setFormData(emptyForm()); setIsAdding(true); }}
+              onClick={() => { setFormData(emptyForm(selectedDate)); setIsAdding(true); }}
               className="bg-white text-indigo-600 hover:bg-indigo-50 px-4 py-2 rounded-xl text-sm font-medium flex items-center gap-2 shadow-lg">
               <Plus className="w-4 h-4" />
-              <span className="hidden sm:inline">Add Investment</span>
+              <span className="hidden sm:inline">Set Metadata</span>
               <span className="sm:hidden">Add</span>
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Info banner */}
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800">
+        ℹ️ <b>Assets, Packing, Ingredients, Expenses, Selling</b> are read automatically from their modules for each date.
+        Investment and Total Balance are computed as a running balance.
+        Only <b>Payment Mode</b> and <b>Notes</b> are stored per date.
       </div>
 
       {/* Summary Cards */}
@@ -352,7 +545,7 @@ const Investments = () => {
         <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-4 md:p-6">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-lg font-semibold text-gray-900">
-              {isEditing ? 'Edit Investment' : 'Add Investment'}
+              {isEditing ? 'Update Metadata' : 'Set Metadata for Date'}
             </h2>
             <button onClick={handleCancel} className="p-2 hover:bg-gray-100 rounded-lg">
               <X className="w-5 h-5 text-gray-500" />
@@ -366,26 +559,9 @@ const Investments = () => {
               </label>
               <input type="date" value={formData.date}
                 onChange={e => patchForm({ date: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                disabled={isEditing}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none disabled:bg-gray-100" />
             </div>
-            {[
-              { k: 'assets', l: 'Assets', I: Building2 },
-              { k: 'packing', l: 'Packing', I: Package },
-              { k: 'ingredients', l: 'Ingredients', I: Box },
-              { k: 'expenses', l: 'Expenses', I: Wallet },
-              { k: 'investment', l: 'Investment', I: PiggyBank },
-              { k: 'selling', l: 'Selling', I: TrendingUp }
-            ].map(({ k, l, I }) => (
-              <div key={k}>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  <I className="w-4 h-4 inline mr-1.5" /> {l}
-                </label>
-                <input type="number" step="0.01" value={formData[k]}
-                  onChange={e => handleFieldChange(k, e.target.value)}
-                  placeholder="0.00"
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-              </div>
-            ))}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">
                 <Wallet className="w-4 h-4 inline mr-1.5" /> Payment Mode
@@ -396,35 +572,60 @@ const Investments = () => {
                 {PAYMENT_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
               </select>
             </div>
-            <div className="md:col-span-2">
+            <div className="md:col-span-1">
               <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                <Wallet className="w-4 h-4 inline mr-1.5" /> Total Balance (auto)
+                <FileText className="w-4 h-4 inline mr-1.5" /> Notes
               </label>
-              <div className="px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-lg font-bold text-indigo-600">
-                {formData.totalBalance ? fmt(formData.totalBalance) : '₹0.00'}
-              </div>
+              <input type="text" value={formData.notes}
+                onChange={e => patchForm({ notes: e.target.value })}
+                placeholder="Optional notes"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
             </div>
           </div>
 
-          <div className="mt-4">
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              <FileText className="w-4 h-4 inline mr-1.5" /> Notes
-            </label>
-            <textarea rows="2" value={formData.notes}
-              onChange={e => patchForm({ notes: e.target.value })}
-              placeholder="Additional notes..."
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+          {/* Live preview */}
+          <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-blue-50 rounded-xl p-3">
+              <p className="text-xs text-gray-600">Assets</p>
+              <p className="text-lg font-bold text-blue-700">{fmt(formPreview.assets)}</p>
+            </div>
+            <div className="bg-purple-50 rounded-xl p-3">
+              <p className="text-xs text-gray-600">Packing</p>
+              <p className="text-lg font-bold text-purple-700">{fmt(formPreview.packing)}</p>
+            </div>
+            <div className="bg-amber-50 rounded-xl p-3">
+              <p className="text-xs text-gray-600">Ingredients</p>
+              <p className="text-lg font-bold text-amber-700">{fmt(formPreview.ingredients)}</p>
+            </div>
+            <div className="bg-red-50 rounded-xl p-3">
+              <p className="text-xs text-gray-600">Expenses</p>
+              <p className="text-lg font-bold text-red-700">{fmt(formPreview.expenses)}</p>
+            </div>
+            <div className="bg-indigo-50 rounded-xl p-3 col-span-2">
+              <p className="text-xs text-gray-600">Investment (auto)</p>
+              <p className="text-2xl font-bold text-indigo-700">{fmt(formPreview.investment)}</p>
+              <p className="text-xs text-gray-500 mt-1">
+                Prev {fmt(formPreview.prevTB)} + Costs {fmt(formPreview.costs)}
+              </p>
+            </div>
+            <div className="bg-emerald-50 rounded-xl p-3">
+              <p className="text-xs text-gray-600">Selling (auto)</p>
+              <p className="text-lg font-bold text-emerald-700">{fmt(formPreview.selling)}</p>
+            </div>
+            <div className="bg-amber-50 rounded-xl p-3 border-2 border-amber-300">
+              <p className="text-xs text-gray-600">Total Balance (auto)</p>
+              <p className="text-2xl font-bold text-amber-700">{fmt(formPreview.totalBalance)}</p>
+            </div>
           </div>
 
-          {/* Sync info */}
           <div className={`mt-4 border rounded-xl p-3 text-sm ${CASH_MODES.has(formData.paymentMode) ? 'bg-green-50 border-green-200 text-green-800' : 'bg-orange-50 border-orange-200 text-orange-800'}`}>
             {CASH_MODES.has(formData.paymentMode)
-              ? `✅ Investment amount will be added to Cashbook (${formData.paymentMode}) on ${formData.date}`
-              : `⚠️ Credit mode — no Cashbook impact. Set payment mode to Cash/UPI/Bank to sync.`}
+              ? `✅ Today's costs ${fmt(formPreview.costs)} will be synced to Cashbook on ${formData.date}`
+              : `⚠️ Credit mode — no Cashbook impact.`}
           </div>
 
           <div className="flex flex-col sm:flex-row items-center justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
-            <button onClick={() => setFormData(emptyForm())}
+            <button onClick={() => setFormData(emptyForm(selectedDate))}
               className="w-full sm:w-auto px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg flex items-center justify-center gap-2">
               <RefreshCw className="w-4 h-4" /> Reset
             </button>
@@ -435,16 +636,16 @@ const Investments = () => {
             <button onClick={isEditing ? handleUpdate : handleAdd} disabled={saving}
               className="w-full sm:w-auto px-6 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50">
               {saving ? (
-                <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Saving...</>
+                <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>
               ) : (
-                <><Save className="w-4 h-4" /> {isEditing ? 'Update' : 'Save Investment'}</>
+                <><Save className="w-4 h-4" /> {isEditing ? 'Update' : 'Save'}</>
               )}
             </button>
           </div>
         </div>
       )}
 
-      {/* List */}
+      {/* Table */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
           <div className="relative flex-1 md:flex-none">
@@ -453,28 +654,28 @@ const Investments = () => {
               onChange={e => setSearchTerm(e.target.value)}
               className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none w-full md:w-72" />
           </div>
-          <span className="text-sm text-gray-500">{filteredData.length} entries</span>
+          <span className="text-sm text-gray-500">{filteredData.length} dates</span>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="bg-gray-50">
-                <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Date</th>
-                <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Assets</th>
-                <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Packing</th>
-                <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Ingredients</th>
-                <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Expenses</th>
-                <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Investment</th>
-                <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Selling</th>
-                <th className="text-right text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Total</th>
-                <th className="text-center text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Payment</th>
-                <th className="text-center text-xs font-medium text-gray-500 uppercase tracking-wider px-3 py-3">Actions</th>
+                <th className="text-left text-xs font-medium text-gray-500 uppercase px-3 py-3">Date</th>
+                <th className="text-right text-xs font-medium text-gray-500 uppercase px-3 py-3">Assets</th>
+                <th className="text-right text-xs font-medium text-gray-500 uppercase px-3 py-3">Packing</th>
+                <th className="text-right text-xs font-medium text-gray-500 uppercase px-3 py-3">Ingredients</th>
+                <th className="text-right text-xs font-medium text-gray-500 uppercase px-3 py-3">Expenses</th>
+                <th className="text-right text-xs font-medium text-gray-500 uppercase px-3 py-3">Investment</th>
+                <th className="text-right text-xs font-medium text-gray-500 uppercase px-3 py-3">Selling</th>
+                <th className="text-right text-xs font-medium text-gray-500 uppercase px-3 py-3">Total</th>
+                <th className="text-center text-xs font-medium text-gray-500 uppercase px-3 py-3">Payment</th>
+                <th className="text-center text-xs font-medium text-gray-500 uppercase px-3 py-3">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filteredData.map(item => (
-                <tr key={item.id} className="border-t border-gray-100 hover:bg-gray-50">
+                <tr key={item.date} className="border-t border-gray-100 hover:bg-gray-50">
                   <td className="px-3 py-3 text-sm text-gray-600 font-medium">{item.date}</td>
                   <td className="px-3 py-3 text-right text-blue-600">{fmt(item.assets)}</td>
                   <td className="px-3 py-3 text-right text-purple-600">{fmt(item.packing)}</td>
@@ -483,12 +684,27 @@ const Investments = () => {
                   <td className="px-3 py-3 text-right text-indigo-600 font-semibold">{fmt(item.investment)}</td>
                   <td className="px-3 py-3 text-right text-emerald-600 font-semibold">{fmt(item.selling)}</td>
                   <td className="px-3 py-3 text-right font-bold text-gray-900">{fmt(item.totalBalance)}</td>
-                  <td className="px-3 py-3 text-center"><PaymentBadge mode={item.paymentMode} /></td>
+                  <td className="px-3 py-3 text-center">
+                    <PaymentBadge mode={item.paymentMode || 'cash'} />
+                  </td>
                   <td className="px-3 py-3 text-center">
                     <div className="flex items-center justify-center gap-1">
-                      <button onClick={() => setSelectedItem(item)} className="p-1.5 hover:bg-blue-50 rounded-lg text-blue-600"><Eye className="w-4 h-4" /></button>
-                      <button onClick={() => handleEdit(item)} className="p-1.5 hover:bg-green-50 rounded-lg text-green-600"><Edit className="w-4 h-4" /></button>
-                      <button onClick={() => { setDeleteId(item.id); setShowDeleteModal(true); }} className="p-1.5 hover:bg-red-50 rounded-lg text-red-600"><Trash2 className="w-4 h-4" /></button>
+                      <button onClick={() => setSelectedItem(item)}
+                        className="p-1.5 hover:bg-blue-50 rounded-lg text-blue-600" title="View">
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => handleEdit(item)}
+                        className="p-1.5 hover:bg-green-50 rounded-lg text-green-600"
+                        title="Set payment mode / notes">
+                        <Edit className="w-4 h-4" />
+                      </button>
+                      {item.metaId && (
+                        <button onClick={() => { setDeleteId(item.metaId); setShowDeleteModal(true); }}
+                          className="p-1.5 hover:bg-red-50 rounded-lg text-red-600"
+                          title="Remove payment mode / notes">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -513,7 +729,10 @@ const Investments = () => {
         {filteredData.length === 0 && (
           <div className="text-center py-12">
             <TrendingUp className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-            <p className="text-gray-500 font-medium">No investment records</p>
+            <p className="text-gray-500 font-medium">No data available</p>
+            <p className="text-sm text-gray-400 mt-1">
+              Add assets, purchases, expenses, or sales to see aggregated data here
+            </p>
           </div>
         )}
       </div>
@@ -538,7 +757,7 @@ const Investments = () => {
                   { l: 'Packing', v: selectedItem.packing, c: 'text-purple-600' },
                   { l: 'Ingredients', v: selectedItem.ingredients, c: 'text-amber-600' },
                   { l: 'Expenses', v: selectedItem.expenses, c: 'text-red-600' },
-                  { l: 'Investment', v: selectedItem.investment, c: 'text-indigo-600' },
+                  { l: "Today's Cost", v: selectedItem.costs, c: 'text-indigo-600' },
                   { l: 'Selling', v: selectedItem.selling, c: 'text-emerald-600' }
                 ].map(x => (
                   <div key={x.l} className="bg-gray-50 rounded-lg p-3">
@@ -546,13 +765,17 @@ const Investments = () => {
                     <p className={`font-bold ${x.c} text-lg`}>{fmt(x.v)}</p>
                   </div>
                 ))}
+                <div className="bg-indigo-50 rounded-lg p-3 col-span-2">
+                  <p className="text-xs text-gray-500">Cumulative Investment</p>
+                  <p className="font-bold text-indigo-600 text-2xl">{fmt(selectedItem.investment)}</p>
+                </div>
                 <div className="bg-amber-50 rounded-lg p-3 col-span-2">
                   <p className="text-xs text-gray-500">Total Balance</p>
                   <p className="font-bold text-amber-600 text-2xl">{fmt(selectedItem.totalBalance)}</p>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3 col-span-2">
                   <p className="text-xs text-gray-500">Payment Mode</p>
-                  <PaymentBadge mode={selectedItem.paymentMode} />
+                  <PaymentBadge mode={selectedItem.paymentMode || 'cash'} />
                 </div>
               </div>
 
@@ -566,11 +789,11 @@ const Investments = () => {
               <div className="flex gap-2 pt-4 border-t">
                 <button onClick={() => { setSelectedItem(null); handleEdit(selectedItem); }}
                   className="flex-1 px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2">
-                  <Edit className="w-4 h-4" /> Edit
+                  <Edit className="w-4 h-4" /> Edit Metadata
                 </button>
-                <button onClick={() => { setSelectedItem(null); setDeleteId(selectedItem.id); setShowDeleteModal(true); }}
-                  className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2">
-                  <Trash2 className="w-4 h-4" /> Delete
+                <button onClick={() => setSelectedItem(null)}
+                  className="flex-1 px-4 py-2 border border-gray-200 rounded-lg text-gray-700 hover:bg-gray-50">
+                  Close
                 </button>
               </div>
             </div>
@@ -586,9 +809,10 @@ const Investments = () => {
               <div className="w-16 h-16 bg-red-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
                 <AlertTriangle className="w-8 h-8 text-red-600" />
               </div>
-              <h3 className="text-xl font-bold mb-2">Delete Investment</h3>
+              <h3 className="text-xl font-bold mb-2">Remove Metadata</h3>
               <p className="text-gray-500 mb-6">
-                This will remove the entry and reverse the Cashbook impact. Continue?
+                This removes payment mode & notes for this date. The underlying data
+                (assets, purchases, expenses, payments) is NOT affected.
               </p>
               <div className="flex gap-3">
                 <button onClick={() => setShowDeleteModal(false)}
@@ -597,7 +821,7 @@ const Investments = () => {
                 </button>
                 <button onClick={confirmDelete} disabled={saving}
                   className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg disabled:opacity-50">
-                  {saving ? 'Deleting...' : 'Delete'}
+                  {saving ? 'Removing...' : 'Remove'}
                 </button>
               </div>
             </div>

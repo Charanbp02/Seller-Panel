@@ -1,12 +1,11 @@
-// Pages/Cashbook/Cashbook.jsx
+// src/Pages/Cashbook/Cashbook.jsx
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  BookOpen, Plus, Search, Filter, Download, Printer, Calendar,
-  TrendingUp, TrendingDown, Edit, Trash2, Eye, FileText, DollarSign,
-  Save, RefreshCw, AlertCircle, X, Clock, CheckCircle, AlertTriangle,
-  Trash, Wallet, Building2, CreditCard, Banknote, Smartphone,
-  Users, Tag, Receipt, Lock, PiggyBank
+  BookOpen, Plus, Search, Calendar, TrendingUp, TrendingDown,
+  Edit, Trash2, Eye, FileText, DollarSign, RefreshCw, AlertCircle,
+  X, Wallet, Building2, CreditCard, Banknote, Smartphone,
+  Users, Tag, Receipt, Lock, PiggyBank, AlertTriangle
 } from 'lucide-react';
 import { db } from '../../firebase/firebaseConfig';
 import {
@@ -14,7 +13,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 
-// ---------- Local-date helper (fixes IST midnight bug) ----------
+// ---------- Helpers ----------
 const getLocalDateString = (d = new Date()) => {
   const dt = new Date(d);
   const y = dt.getFullYear();
@@ -23,24 +22,19 @@ const getLocalDateString = (d = new Date()) => {
   return `${y}-${m}-${day}`;
 };
 
-// ---------- Cash mode — only these count toward real cash/bank ----------
 const CASH_MODES = new Set(['cash', 'upi', 'bank']);
 
-// ---------- Deterministic entry ID (source + sourceId → same ID) ----------
 const buildEntryId = (source, sourceId) => {
   const src = String(source || 'manual').trim();
   const id = String(sourceId || '');
   return id ? `${src}_${id}` : `${src}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 };
 
-// ---------- Compute totals with proper type + mode awareness ----------
 const computeDayTotals = (entries) => {
   let sales = 0, expense = 0, owner = 0, investment = 0;
   (entries || []).forEach((e) => {
     const amt = Number(e.amount) || 0;
-    const isCash = CASH_MODES.has(e.paymentMode);
-    if (!isCash) return; // credit → no cash impact (sales, expense, owner, investment — all)
-
+    if (!CASH_MODES.has(e.paymentMode)) return;
     if (e.type === 'sales') sales += amt;
     else if (e.type === 'expense') expense += amt;
     else if (e.type === 'owner') owner += amt;
@@ -49,16 +43,18 @@ const computeDayTotals = (entries) => {
   return { sales, expense, owner, investment };
 };
 
-// ---------- Compute closing balance ----------
 const computeClosing = (opening, totals) =>
   opening + totals.sales + totals.investment - totals.expense - totals.owner;
 
+// ============================================================
+// COMPONENT
+// ============================================================
 const Cashbook = () => {
   const navigate = useNavigate();
   const [isAdding, setIsAdding] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [editingId, setEditingId] = useState(null);            // day-doc id (for move-between-dates)
-  const [editingEntryId, setEditingEntryId] = useState(null);  // 🆕 entry.id (stable)
+  const [editingId, setEditingId] = useState(null);
+  const [editingEntryId, setEditingEntryId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDate, setSelectedDate] = useState(getLocalDateString());
   const [selectedEntry, setSelectedEntry] = useState(null);
@@ -94,18 +90,38 @@ const Cashbook = () => {
   }, []);
 
   // =====================================================================
-  // FETCH ALL DAYS (outside tx)
+  // Prefetch helpers (called OUTSIDE tx)
   // =====================================================================
-  const fetchAllDays = async () => {
-    const snap = await getDocs(collection(db, 'cashbook'));
+  const findDayRef = async (date) => {
+    const snap = await getDocs(query(
+      collection(db, 'cashbook'),
+      where('date', '==', date)
+    ));
+    return snap.empty ? null : snap.docs[0].ref;
+  };
+
+  const findEarlierRefs = async (date) => {
+    const snap = await getDocs(query(
+      collection(db, 'cashbook'),
+      where('date', '<', date)
+    ));
     return snap.docs
-      .map((d) => ({ id: d.id, ref: d.ref, ...d.data() }))
+      .map(d => ({ ref: d.ref, date: d.data().date }))
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  };
+
+  const findLaterRefs = async (date) => {
+    const snap = await getDocs(query(
+      collection(db, 'cashbook'),
+      where('date', '>', date)
+    ));
+    return snap.docs
+      .map(d => ({ ref: d.ref, date: d.data().date }))
       .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
   };
 
   // =====================================================================
-  // CORE UPSERT — one entry, cascaded forward from its date.
-  // Move-between-dates handled in ONE transaction (merged updates).
+  // CORE UPSERT — concurrency-safe via prefetch + tx reads
   // =====================================================================
   const upsertEntry = async (entryPayload, oldDate = null) => {
     const {
@@ -125,8 +141,6 @@ const Cashbook = () => {
     const entryId = providedId || buildEntryId(source, sourceId);
     const nowISO = new Date().toISOString();
 
-    const allDocs = await fetchAllDays();
-
     const buildEntry = (existing) => ({
       id: entryId,
       date,
@@ -142,79 +156,120 @@ const Cashbook = () => {
       updatedAt: nowISO
     });
 
-    // Compute cascade updates for a specific base date
-    const computeCascade = (baseDate, mutateEntries) => {
-      const targetExisting = allDocs.find((d) => d.date === baseDate) || null;
-      const existingEntries = targetExisting?.entries || [];
-      const newEntries = mutateEntries(existingEntries);
-      const targetTotals = computeDayTotals(newEntries);
+    // ------------------------------------------------------------
+    // Determine which dates are affected
+    // ------------------------------------------------------------
+    const affectedDates = new Set();
+    affectedDates.add(date);
+    if (oldDate && oldDate !== date) affectedDates.add(oldDate);
 
-      const earlier = allDocs.filter((d) => d.date < baseDate);
-      let carry = earlier.length > 0
-        ? Number(earlier[earlier.length - 1].closingBalance) || 0
-        : 0;
+    // Prefetch refs for affected dates
+    const targetRefs = {};
+    const earlierRefs = {};
+    const laterRefs = {};
 
-      const updates = [];
-      const baseClosing = computeClosing(carry, targetTotals);
-      updates.push({
-        date: baseDate,
-        ref: targetExisting?.ref || null,
-        isNew: !targetExisting,
-        entries: newEntries,
-        totals: targetTotals,
-        opening: carry,
-        closing: baseClosing
-      });
-      carry = baseClosing;
+    for (const d of affectedDates) {
+      targetRefs[d] = await findDayRef(d);
+      earlierRefs[d] = await findEarlierRefs(d);
+      laterRefs[d] = await findLaterRefs(d);
+    }
 
-      const later = allDocs.filter((d) => d.date > baseDate);
-      for (const d of later) {
-        const t = computeDayTotals(d.entries || []);
-        const opening = carry;
-        const closing = computeClosing(opening, t);
-        updates.push({
-          date: d.date,
-          ref: d.ref,
-          isNew: false,
-          entries: d.entries || [],
-          totals: t,
-          opening,
-          closing
-        });
-        carry = closing;
+    // Merge later refs (union across affected dates)
+    const laterUnion = new Map();
+    for (const d of affectedDates) {
+      for (const r of laterRefs[d]) {
+        laterUnion.set(r.ref.path, r);
       }
-      return updates;
-    };
-
-    let mergedUpdates;
-    if (oldDate && oldDate !== date) {
-      // Move between dates — single transaction
-      const removeUpdates = computeCascade(oldDate, (entries) =>
-        entries.filter((e) => e.id !== entryId)
-      );
-      const addUpdates = computeCascade(date, (entries) => {
-        const existing = entries.find((e) => e.id === entryId);
-        const without = entries.filter((e) => e.id !== entryId);
-        return [...without, buildEntry(existing)];
-      });
-      const map = new Map();
-      for (const u of [...removeUpdates, ...addUpdates]) map.set(u.date, u);
-      mergedUpdates = [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
-    } else {
-      mergedUpdates = computeCascade(date, (entries) => {
-        const existing = entries.find((e) => e.id === entryId);
-        const without = entries.filter((e) => e.id !== entryId);
-        return [...without, buildEntry(existing)];
-      });
+    }
+    // Also fetch target day docs from other date (edit case)
+    const otherDateRefs = [];
+    if (oldDate && oldDate !== date && targetRefs[oldDate]) {
+      otherDateRefs.push(targetRefs[oldDate]);
     }
 
     await runTransaction(db, async (tx) => {
-      // PHASE A: reads
-      for (const u of mergedUpdates) {
-        if (!u.isNew && u.ref) await tx.get(u.ref);
+      // ============ PHASE A: ALL READS ============
+      // Read target day docs
+      const targetSnaps = {};
+      for (const d of affectedDates) {
+        if (targetRefs[d]) {
+          targetSnaps[d] = await tx.get(targetRefs[d]);
+        }
       }
-      // PHASE B: writes
-      for (const u of mergedUpdates) {
+      // Read earlier days (for opening balance)
+      const earlierSnaps = {};
+      for (const d of affectedDates) {
+        earlierSnaps[d] = [];
+        for (const r of earlierRefs[d]) {
+          earlierSnaps[d].push({ ref: r.ref, snap: await tx.get(r.ref) });
+        }
+      }
+      // Read later days for cascade
+      const laterSnaps = [];
+      for (const r of laterUnion.values()) {
+        laterSnaps.push({ ref: r.ref, snap: await tx.get(r.ref), date: r.date });
+      }
+      laterSnaps.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+      // ============ PHASE B: ALL WRITES ============
+      // ----- STEP 1: Apply mutations to each affected date -----
+      const dateUpdates = {}; // date → { entries, totals, opening, closing }
+
+      for (const d of affectedDates) {
+        const snap = targetSnaps[d];
+        const existingData = snap?.exists() ? snap.data() : null;
+        let entries = existingData?.entries ? [...existingData.entries] : [];
+
+        // Remove entry with matching id from this date
+        entries = entries.filter(e => e.id !== entryId);
+
+        // Add entry if this is the new date
+        if (d === date) {
+          entries.push(buildEntry(existingData?.entries?.find(e => e.id === entryId)));
+        }
+
+        dateUpdates[d] = entries;
+      }
+
+      // ----- STEP 2: Compute opening + closing for each date -----
+      // Sort affected dates ascending for deterministic processing
+      const sortedDates = [...affectedDates].sort();
+
+      const finalUpdates = []; // { date, ref, isNew, entries, totals, opening, closing }
+
+      for (const d of sortedDates) {
+        const entries = dateUpdates[d];
+        const totals = computeDayTotals(entries);
+
+        // Determine opening from either target doc or earlier day
+        let opening = 0;
+        const snap = targetSnaps[d];
+        if (snap?.exists()) {
+          opening = Number(snap.data().openingBalance) || 0;
+        } else {
+          const earlier = earlierSnaps[d];
+          if (earlier.length > 0) {
+            const last = earlier[earlier.length - 1];
+            if (last.snap?.exists()) {
+              opening = Number(last.snap.data().closingBalance) || 0;
+            }
+          }
+        }
+
+        const closing = computeClosing(opening, totals);
+        finalUpdates.push({
+          date: d,
+          ref: targetRefs[d] || null,
+          isNew: !targetRefs[d],
+          entries,
+          totals,
+          opening,
+          closing
+        });
+      }
+
+      // ----- STEP 3: Write target day updates -----
+      for (const u of finalUpdates) {
         const payload = {
           date: u.date,
           openingBalance: u.opening,
@@ -232,6 +287,32 @@ const Cashbook = () => {
           tx.update(u.ref, payload);
         }
       }
+
+      // ----- STEP 4: Cascade later days -----
+      // Starting carry = max closing of affected dates
+      const maxDate = sortedDates[sortedDates.length - 1];
+      const startingClosing = finalUpdates.find(u => u.date === maxDate)?.closing || 0;
+      let carry = startingClosing;
+
+      for (const { ref, snap, date: ldate } of laterSnaps) {
+        if (!snap?.exists()) continue;
+        // Skip if ldate is one of affected dates (already processed)
+        if (affectedDates.has(ldate)) continue;
+        const d = snap.data();
+        const t = computeDayTotals(d.entries || []);
+        const op = carry;
+        const cl = computeClosing(op, t);
+        tx.update(ref, {
+          openingBalance: op,
+          sales: t.sales,
+          expense: t.expense,
+          owner: t.owner,
+          investment: t.investment,
+          closingBalance: cl,
+          updatedAt: nowISO
+        });
+        carry = cl;
+      }
     });
 
     return entryId;
@@ -242,62 +323,64 @@ const Cashbook = () => {
   // =====================================================================
   const removeEntry = async (date, entryId) => {
     const nowISO = new Date().toISOString();
-    const allDocs = await fetchAllDays();
-    const targetExisting = allDocs.find((d) => d.date === date) || null;
-    if (!targetExisting) return;
 
-    const newEntries = (targetExisting.entries || []).filter((e) => e.id !== entryId);
-    const targetTotals = computeDayTotals(newEntries);
+    const targetRef = await findDayRef(date);
+    if (!targetRef) return;
 
-    const earlier = allDocs.filter((d) => d.date < date);
-    let carry = earlier.length > 0
-      ? Number(earlier[earlier.length - 1].closingBalance) || 0
-      : 0;
+    const earlierRefs = await findEarlierRefs(date);
+    const laterRefs = await findLaterRefs(date);
 
-    const updates = [];
-    const baseClosing = computeClosing(carry, targetTotals);
-    updates.push({
-      ref: targetExisting.ref,
-      isNew: false,
-      payload: {
+    await runTransaction(db, async (tx) => {
+      // ============ PHASE A ============
+      const targetSnap = await tx.get(targetRef);
+      if (!targetSnap.exists()) return;
+
+      const earlierSnaps = [];
+      for (const r of earlierRefs) {
+        earlierSnaps.push({ ref: r.ref, snap: await tx.get(r.ref) });
+      }
+      const laterSnaps = [];
+      for (const r of laterRefs) {
+        laterSnaps.push({ ref: r.ref, snap: await tx.get(r.ref), date: r.date });
+      }
+
+      // ============ PHASE B ============
+      const dayData = targetSnap.data();
+      const newEntries = (dayData.entries || []).filter(e => e.id !== entryId);
+      const totals = computeDayTotals(newEntries);
+      const opening = Number(dayData.openingBalance) || 0;
+      const closing = computeClosing(opening, totals);
+
+      tx.update(targetRef, {
         date,
-        openingBalance: carry,
-        sales: targetTotals.sales,
-        expense: targetTotals.expense,
-        owner: targetTotals.owner,
-        investment: targetTotals.investment,
-        closingBalance: baseClosing,
+        openingBalance: opening,
+        sales: totals.sales,
+        expense: totals.expense,
+        owner: totals.owner,
+        investment: totals.investment,
+        closingBalance: closing,
         entries: newEntries,
         updatedAt: nowISO
-      }
-    });
-    carry = baseClosing;
+      });
 
-    for (const d of allDocs.filter((x) => x.date > date)) {
-      const t = computeDayTotals(d.entries || []);
-      const opening = carry;
-      const closing = computeClosing(opening, t);
-      updates.push({
-        ref: d.ref,
-        isNew: false,
-        payload: {
-          date: d.date,
-          openingBalance: opening,
+      let carry = closing;
+      for (const { ref, snap, date: ldate } of laterSnaps) {
+        if (!snap?.exists()) continue;
+        const d = snap.data();
+        const t = computeDayTotals(d.entries || []);
+        const op = carry;
+        const cl = computeClosing(op, t);
+        tx.update(ref, {
+          openingBalance: op,
           sales: t.sales,
           expense: t.expense,
           owner: t.owner,
           investment: t.investment,
-          closingBalance: closing,
-          entries: d.entries || [],
+          closingBalance: cl,
           updatedAt: nowISO
-        }
-      });
-      carry = closing;
-    }
-
-    await runTransaction(db, async (tx) => {
-      for (const u of updates) if (u.ref) await tx.get(u.ref);
-      for (const u of updates) if (u.ref) tx.update(u.ref, u.payload);
+        });
+        carry = cl;
+      }
     });
   };
 
@@ -306,42 +389,42 @@ const Cashbook = () => {
   // =====================================================================
   const removeWholeDay = async (dayDocId, dayDate) => {
     const nowISO = new Date().toISOString();
-    const allDocs = await fetchAllDays();
-    const targetDoc = allDocs.find((d) => d.id === dayDocId);
-    if (!targetDoc) return;
+    const targetRef = doc(db, 'cashbook', dayDocId);
+    const laterRefs = await findLaterRefs(dayDate);
 
-    const earlier = allDocs.filter((d) => d.date < dayDate);
-    let carry = earlier.length > 0
-      ? Number(earlier[earlier.length - 1].closingBalance) || 0
-      : 0;
+    await runTransaction(db, async (tx) => {
+      const targetSnap = await tx.get(targetRef);
+      if (!targetSnap.exists()) return;
 
-    const updates = [];
-    for (const d of allDocs.filter((x) => x.date > dayDate)) {
-      const t = computeDayTotals(d.entries || []);
-      const opening = carry;
-      const closing = computeClosing(opening, t);
-      updates.push({
-        ref: d.ref,
-        payload: {
-          date: d.date,
-          openingBalance: opening,
+      const laterSnaps = [];
+      for (const r of laterRefs) {
+        laterSnaps.push({ ref: r.ref, snap: await tx.get(r.ref), date: r.date });
+      }
+
+      // Delete target day
+      tx.delete(targetRef);
+
+      // Determine opening from target's opening
+      const opening = Number(targetSnap.data().openingBalance) || 0;
+      let carry = opening;
+
+      for (const { ref, snap } of laterSnaps) {
+        if (!snap?.exists()) continue;
+        const d = snap.data();
+        const t = computeDayTotals(d.entries || []);
+        const op = carry;
+        const cl = computeClosing(op, t);
+        tx.update(ref, {
+          openingBalance: op,
           sales: t.sales,
           expense: t.expense,
           owner: t.owner,
           investment: t.investment,
-          closingBalance: closing,
-          entries: d.entries || [],
+          closingBalance: cl,
           updatedAt: nowISO
-        }
-      });
-      carry = closing;
-    }
-
-    await runTransaction(db, async (tx) => {
-      if (targetDoc.ref) await tx.get(targetDoc.ref);
-      for (const u of updates) await tx.get(u.ref);
-      if (targetDoc.ref) tx.delete(targetDoc.ref);
-      for (const u of updates) tx.update(u.ref, u.payload);
+        });
+        carry = cl;
+      }
     });
   };
 
@@ -352,7 +435,6 @@ const Cashbook = () => {
       return;
     }
     if (formData.paymentMode === 'credit' && formData.type !== 'expense') {
-      // Only warn for non-expense (expenses might genuinely be on credit with vendor)
       const ok = window.confirm(
         `This ${formData.type} is marked as Credit. It will NOT affect your cashbook balance. Continue?`
       );
@@ -360,7 +442,7 @@ const Cashbook = () => {
     }
     if (formData.paymentMode === 'credit' && formData.type === 'expense') {
       const ok = window.confirm(
-        'This expense is marked as Credit. It will NOT reduce your cash balance (vendor payable only). Continue?'
+        'This expense is marked as Credit. It will NOT reduce your cash balance. Continue?'
       );
       if (!ok) return;
     }
@@ -380,10 +462,8 @@ const Cashbook = () => {
         sourceId: null
       };
 
-      // If editing and the DATE changed, we need old date for the move
       let oldDate = null;
       if (isEditing && editingId) {
-        // Fetch target day doc directly (issue #10 fix)
         const dayRef = doc(db, 'cashbook', editingId);
         const daySnap = await getDoc(dayRef);
         if (daySnap.exists()) {
@@ -398,11 +478,7 @@ const Cashbook = () => {
       setEditingId(null);
       setEditingEntryId(null);
       resetForm();
-      const msg = document.createElement('div');
-      msg.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50';
-      msg.textContent = isEditing ? 'Entry updated!' : 'Entry added!';
-      document.body.appendChild(msg);
-      setTimeout(() => msg.remove(), 3000);
+      showToast(isEditing ? 'Entry updated!' : 'Entry added!');
     } catch (error) {
       console.error('Error saving entry:', error);
       alert('Failed to save entry: ' + (error.message || 'Unknown error'));
@@ -421,7 +497,6 @@ const Cashbook = () => {
       setIsAdding(true);
       return;
     }
-    // 🔒 Guard: automatic entries are read-only in Cashbook
     if (entry.source && entry.source !== 'manual') {
       alert(
         `This entry was auto-generated by "${entry.source}". ` +
@@ -430,8 +505,8 @@ const Cashbook = () => {
       return;
     }
     setIsEditing(true);
-    setEditingId(dayItem.id);                     // day-doc id (for move)
-    setEditingEntryId(entry.id || null);          // 🆕 stable entry id
+    setEditingId(dayItem.id);
+    setEditingEntryId(entry.id || null);
     setFormData({
       date: dayItem.date,
       type: entry.type || 'sales',
@@ -468,8 +543,7 @@ const Cashbook = () => {
       );
       if (hasAuto) {
         alert(
-          'This day contains automatic entries (from Daily Sales / Expenses). ' +
-          'Delete those from their source pages first.'
+          'This day contains automatic entries. Delete those from their source pages first.'
         );
         return;
       }
@@ -484,78 +558,43 @@ const Cashbook = () => {
     try {
       if (deleteTarget.whole) {
         await removeWholeDay(deleteTarget.docId, deleteTarget.date);
+      } else if (deleteTarget.entryId) {
+        await removeEntry(deleteTarget.date, deleteTarget.entryId);
       } else {
-        // Prefer stable entry.id; fall back to index for legacy entries
-        if (deleteTarget.entryId) {
-          await removeEntry(deleteTarget.date, deleteTarget.entryId);
-        } else {
-          // Legacy fallback: remove by index using inline helper
-          const dayRef = doc(db, 'cashbook', deleteTarget.docId);
-          const daySnap = await getDoc(dayRef);
-          if (!daySnap.exists()) throw new Error('Cashbook day not found');
-          const dayData = daySnap.data();
-          const newEntries = (dayData.entries || []).filter(
-            (_, i) => i !== deleteTarget.entryIndex
-          );
-          // Write via upsertEntry path by replacing the whole day's entries
-          // (Simple because we already have the day id)
-          const nowISO = new Date().toISOString();
-          const allDocs = await fetchAllDays();
-          const t = computeDayTotals(newEntries);
-          const earlier = allDocs.filter((d) => d.date < deleteTarget.date);
-          let carry = earlier.length > 0
-            ? Number(earlier[earlier.length - 1].closingBalance) || 0
-            : 0;
-          const updates = [];
-          const baseClosing = computeClosing(carry, t);
-          updates.push({
-            ref: dayRef,
-            payload: {
-              date: deleteTarget.date,
-              openingBalance: carry,
-              sales: t.sales,
-              expense: t.expense,
-              owner: t.owner,
-              investment: t.investment,
-              closingBalance: baseClosing,
-              entries: newEntries,
-              updatedAt: nowISO
-            }
+        // Legacy fallback by index
+        const dayRef = doc(db, 'cashbook', deleteTarget.docId);
+        const daySnap = await getDoc(dayRef);
+        if (!daySnap.exists()) throw new Error('Cashbook day not found');
+        const dayData = daySnap.data();
+        const newEntries = (dayData.entries || []).filter(
+          (_, i) => i !== deleteTarget.entryIndex
+        );
+        // Reuse removeEntry by id approach
+        // (simplest: if no stable id, delete the whole day's entries then re-add)
+        // Just update with filtered entries
+        const nowISO = new Date().toISOString();
+        const t = computeDayTotals(newEntries);
+        const opening = Number(dayData.openingBalance) || 0;
+        const closing = computeClosing(opening, t);
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(dayRef);
+          if (!snap.exists()) return;
+          tx.update(dayRef, {
+            date: deleteTarget.date,
+            openingBalance: opening,
+            sales: t.sales,
+            expense: t.expense,
+            owner: t.owner,
+            investment: t.investment,
+            closingBalance: closing,
+            entries: newEntries,
+            updatedAt: nowISO
           });
-          carry = baseClosing;
-          for (const d of allDocs.filter((x) => x.date > deleteTarget.date)) {
-            const tt = computeDayTotals(d.entries || []);
-            const opening = carry;
-            const closing = computeClosing(opening, tt);
-            updates.push({
-              ref: d.ref,
-              payload: {
-                date: d.date,
-                openingBalance: opening,
-                sales: tt.sales,
-                expense: tt.expense,
-                owner: tt.owner,
-                investment: tt.investment,
-                closingBalance: closing,
-                entries: d.entries || [],
-                updatedAt: nowISO
-              }
-            });
-            carry = closing;
-          }
-          await runTransaction(db, async (tx) => {
-            for (const u of updates) await tx.get(u.ref);
-            for (const u of updates) tx.update(u.ref, u.payload);
-          });
-        }
+        });
       }
       setShowDeleteModal(false);
       setDeleteTarget(null);
-      const msg = document.createElement('div');
-      msg.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50';
-      msg.textContent = 'Deleted successfully!';
-      document.body.appendChild(msg);
-      setTimeout(() => msg.remove(), 3000);
+      showToast('Deleted successfully!');
     } catch (error) {
       console.error('Error deleting entry:', error);
       alert('Failed to delete: ' + (error.message || 'Unknown error'));
@@ -587,6 +626,14 @@ const Cashbook = () => {
     setEditingId(null);
     setEditingEntryId(null);
     resetForm();
+  };
+
+  const showToast = (text) => {
+    const el = document.createElement('div');
+    el.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50';
+    el.textContent = text;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3000);
   };
 
   // ---------- Filters ----------
@@ -669,7 +716,7 @@ const Cashbook = () => {
             </div>
             <div>
               <h1 className="text-xl md:text-2xl font-bold text-white">Cashbook</h1>
-              <p className="text-amber-100 text-sm">Track daily cash flow and transactions</p>
+              <p className="text-amber-100 text-sm">Auto-syncs from Sales, Customers, Investments, Expenses</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -688,7 +735,7 @@ const Cashbook = () => {
                 setFormData((p) => ({ ...p, date: selectedDate }));
                 setIsAdding(true);
               }}
-              className="bg-white text-amber-600 hover:bg-amber-50 px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 shadow-lg hover:shadow-xl"
+              className="bg-white text-amber-600 hover:bg-amber-50 px-4 py-2 rounded-xl text-sm font-medium flex items-center gap-2 shadow-lg"
             >
               <Plus className="w-4 h-4" />
               <span className="hidden sm:inline">Add Entry</span>
@@ -701,26 +748,24 @@ const Cashbook = () => {
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-          <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Current Balance</p>
-          <p className="text-xl md:text-2xl font-bold text-emerald-600 mt-1">
-            ₹{currentBalance.toFixed(2)}
-          </p>
+          <p className="text-xs text-gray-500 font-medium uppercase">Current Balance</p>
+          <p className="text-xl md:text-2xl font-bold text-emerald-600 mt-1">₹{currentBalance.toFixed(2)}</p>
           <p className="text-[10px] text-gray-400 mt-1">Cash + UPI + Bank only</p>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-          <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Total Sales</p>
+          <p className="text-xs text-gray-500 font-medium uppercase">Total Sales</p>
           <p className="text-xl md:text-2xl font-bold text-green-600 mt-1">₹{totalSales.toFixed(2)}</p>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-          <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Total Expenses</p>
+          <p className="text-xs text-gray-500 font-medium uppercase">Total Expenses</p>
           <p className="text-xl md:text-2xl font-bold text-red-600 mt-1">₹{totalExpense.toFixed(2)}</p>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-          <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Owner Withdrawals</p>
+          <p className="text-xs text-gray-500 font-medium uppercase">Owner Withdrawals</p>
           <p className="text-xl md:text-2xl font-bold text-purple-600 mt-1">₹{totalOwner.toFixed(2)}</p>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-          <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Investments</p>
+          <p className="text-xs text-gray-500 font-medium uppercase">Investments</p>
           <p className="text-xl md:text-2xl font-bold text-blue-600 mt-1">₹{totalInvestment.toFixed(2)}</p>
         </div>
       </div>
@@ -756,7 +801,7 @@ const Cashbook = () => {
               <select
                 value={formData.type}
                 onChange={(e) => setFormData({ ...formData, type: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               >
                 <option value="sales">Sales (Income)</option>
                 <option value="expense">Expense</option>
@@ -771,7 +816,7 @@ const Cashbook = () => {
               <select
                 value={formData.paymentMode}
                 onChange={(e) => setFormData({ ...formData, paymentMode: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               >
                 <option value="cash">Cash</option>
                 <option value="upi">UPI</option>
@@ -788,7 +833,7 @@ const Cashbook = () => {
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="Enter description"
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               />
             </div>
             <div>
@@ -801,7 +846,7 @@ const Cashbook = () => {
                 onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
                 placeholder="0.00"
                 step="0.01"
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               />
             </div>
             <div>
@@ -813,7 +858,7 @@ const Cashbook = () => {
                 value={formData.reference}
                 onChange={(e) => setFormData({ ...formData, reference: e.target.value })}
                 placeholder="Invoice/Ref number"
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg"
               />
             </div>
           </div>
@@ -823,8 +868,6 @@ const Cashbook = () => {
               <p className="text-sm text-orange-800">
                 <AlertCircle className="w-4 h-4 inline mr-1.5" />
                 <strong>Credit entry:</strong> This will NOT affect your cashbook balance.
-                {formData.type === 'sales' && ' Outstanding will be tracked in the Customer Ledger.'}
-                {formData.type === 'expense' && ' Track as vendor payable instead.'}
               </p>
             </div>
           )}
@@ -837,17 +880,13 @@ const Cashbook = () => {
               value={formData.notes}
               onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
               rows="2"
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg"
             />
           </div>
 
-          <div className="flex flex-col sm:flex-row items-center justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
-            <button onClick={resetForm} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">
-              Reset
-            </button>
-            <button onClick={handleCancel} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">
-              Cancel
-            </button>
+          <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
+            <button onClick={resetForm} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Reset</button>
+            <button onClick={handleCancel} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
             <button
               onClick={handleAddEntry}
               disabled={saving}
@@ -859,17 +898,17 @@ const Cashbook = () => {
         </div>
       )}
 
-      {/* Cashbook List */}
+      {/* List */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-6">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
           <div className="relative flex-1 md:flex-none">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
               placeholder="Search by date, description, or reference..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 w-full md:w-80"
+              className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg w-full md:w-80"
             />
           </div>
           <span className="text-sm text-gray-500">{filteredData.length} entries</span>
@@ -898,49 +937,25 @@ const Cashbook = () => {
                       {(item.entries || []).length} transaction{(item.entries || []).length !== 1 ? 's' : ''}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-right text-gray-600">
-                    ₹{Number(item.openingBalance || 0).toFixed(2)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-medium text-green-600">
-                    ₹{Number(item.sales || 0).toFixed(2)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-medium text-blue-600">
-                    ₹{Number(item.investment || 0).toFixed(2)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-medium text-red-600">
-                    ₹{Number(item.expense || 0).toFixed(2)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-medium text-purple-600">
-                    ₹{Number(item.owner || 0).toFixed(2)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-bold text-emerald-600">
-                    ₹{Number(item.closingBalance || 0).toFixed(2)}
-                  </td>
+                  <td className="px-4 py-3 text-right text-gray-600">₹{Number(item.openingBalance || 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-medium text-green-600">₹{Number(item.sales || 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-medium text-blue-600">₹{Number(item.investment || 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-medium text-red-600">₹{Number(item.expense || 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-medium text-purple-600">₹{Number(item.owner || 0).toFixed(2)}</td>
+                  <td className="px-4 py-3 text-right font-bold text-emerald-600">₹{Number(item.closingBalance || 0).toFixed(2)}</td>
                   <td className="px-4 py-3 text-center">
                     <div className="flex items-center justify-center gap-1">
-                      <button
-                        onClick={() => handleView(item)}
-                        className="p-1.5 hover:bg-blue-50 rounded-lg text-blue-600"
-                        title="View"
-                      >
+                      <button onClick={() => handleView(item)} className="p-1.5 hover:bg-blue-50 rounded-lg text-blue-600" title="View">
                         <Eye className="w-4 h-4" />
                       </button>
-                      <button
-                        onClick={() => {
-                          resetForm();
-                          setFormData((p) => ({ ...p, date: item.date }));
-                          setIsAdding(true);
-                        }}
-                        className="p-1.5 hover:bg-green-50 rounded-lg text-green-600"
-                        title="Add to this day"
-                      >
+                      <button onClick={() => {
+                        resetForm();
+                        setFormData((p) => ({ ...p, date: item.date }));
+                        setIsAdding(true);
+                      }} className="p-1.5 hover:bg-green-50 rounded-lg text-green-600" title="Add to this day">
                         <Plus className="w-4 h-4" />
                       </button>
-                      <button
-                        onClick={() => handleDelete(item)}
-                        className="p-1.5 hover:bg-red-50 rounded-lg text-red-600"
-                        title="Delete whole day (only if no automatic entries)"
-                      >
+                      <button onClick={() => handleDelete(item)} className="p-1.5 hover:bg-red-50 rounded-lg text-red-600" title="Delete day">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -959,58 +974,33 @@ const Cashbook = () => {
         )}
       </div>
 
-      {/* View Details Modal */}
+      {/* View Modal */}
       {selectedEntry && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="sticky top-0 bg-white border-b border-gray-200 p-4 flex items-center justify-between">
-              <div>
-                <h3 className="font-semibold text-gray-900">Cashbook — {selectedEntry.date}</h3>
-              </div>
-              <button
-                onClick={() => setSelectedEntry(null)}
-                className="p-2 hover:bg-gray-100 rounded-lg"
-              >
+              <h3 className="font-semibold text-gray-900">Cashbook — {selectedEntry.date}</h3>
+              <button onClick={() => setSelectedEntry(null)} className="p-2 hover:bg-gray-100 rounded-lg">
                 <X className="w-5 h-5 text-gray-500" />
               </button>
             </div>
             <div className="p-6 space-y-4">
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <div className="bg-gray-50 rounded-lg p-3 text-center">
-                  <p className="text-xs text-gray-500">Opening</p>
-                  <p className="font-bold text-gray-900">
-                    ₹{Number(selectedEntry.openingBalance || 0).toFixed(2)}
-                  </p>
-                </div>
-                <div className="bg-green-50 rounded-lg p-3 text-center">
-                  <p className="text-xs text-gray-500">Sales</p>
-                  <p className="font-bold text-green-600">
-                    ₹{Number(selectedEntry.sales || 0).toFixed(2)}
-                  </p>
-                </div>
-                <div className="bg-blue-50 rounded-lg p-3 text-center">
-                  <p className="text-xs text-gray-500">Investment</p>
-                  <p className="font-bold text-blue-600">
-                    ₹{Number(selectedEntry.investment || 0).toFixed(2)}
-                  </p>
-                </div>
-                <div className="bg-red-50 rounded-lg p-3 text-center">
-                  <p className="text-xs text-gray-500">Expense</p>
-                  <p className="font-bold text-red-600">
-                    ₹{Number(selectedEntry.expense || 0).toFixed(2)}
-                  </p>
-                </div>
-                <div className="bg-purple-50 rounded-lg p-3 text-center">
-                  <p className="text-xs text-gray-500">Owner</p>
-                  <p className="font-bold text-purple-600">
-                    ₹{Number(selectedEntry.owner || 0).toFixed(2)}
-                  </p>
-                </div>
+                {[
+                  { l: 'Opening', v: selectedEntry.openingBalance, c: 'text-gray-900', bg: 'bg-gray-50' },
+                  { l: 'Sales', v: selectedEntry.sales, c: 'text-green-600', bg: 'bg-green-50' },
+                  { l: 'Investment', v: selectedEntry.investment, c: 'text-blue-600', bg: 'bg-blue-50' },
+                  { l: 'Expense', v: selectedEntry.expense, c: 'text-red-600', bg: 'bg-red-50' },
+                  { l: 'Owner', v: selectedEntry.owner, c: 'text-purple-600', bg: 'bg-purple-50' }
+                ].map(x => (
+                  <div key={x.l} className={`${x.bg} rounded-lg p-3 text-center`}>
+                    <p className="text-xs text-gray-500">{x.l}</p>
+                    <p className={`font-bold ${x.c}`}>₹{Number(x.v || 0).toFixed(2)}</p>
+                  </div>
+                ))}
                 <div className="bg-emerald-50 rounded-lg p-3 text-center col-span-2 md:col-span-5">
                   <p className="text-xs text-gray-500">Closing Balance</p>
-                  <p className="font-bold text-emerald-600 text-xl">
-                    ₹{Number(selectedEntry.closingBalance || 0).toFixed(2)}
-                  </p>
+                  <p className="font-bold text-emerald-600 text-xl">₹{Number(selectedEntry.closingBalance || 0).toFixed(2)}</p>
                 </div>
               </div>
 
@@ -1018,14 +1008,9 @@ const Cashbook = () => {
                 <p className="text-sm font-medium text-gray-700 mb-3">Transactions</p>
                 <div className="space-y-2">
                   {(selectedEntry.entries || []).map((entry, idx) => (
-                    <div
-                      key={entry.id || idx}
-                      className={`flex items-center justify-between p-3 rounded-lg border ${
-                        isAutomatic(entry)
-                          ? 'border-blue-200 bg-blue-50/40'
-                          : 'border-gray-100 hover:bg-gray-50'
-                      }`}
-                    >
+                    <div key={entry.id || idx} className={`flex items-center justify-between p-3 rounded-lg border ${
+                      isAutomatic(entry) ? 'border-blue-200 bg-blue-50/40' : 'border-gray-100 hover:bg-gray-50'
+                    }`}>
                       <div className="flex items-center gap-3 flex-1 min-w-0">
                         <div className={`p-2 rounded-lg ${
                           entry.type === 'sales' ? 'bg-green-50 text-green-600' :
@@ -1044,46 +1029,30 @@ const Cashbook = () => {
                             {getPaymentBadge(entry.paymentMode)}
                             {isAutomatic(entry) && (
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
-                                <Lock className="w-3 h-3" />
-                                Auto ({entry.source})
+                                <Lock className="w-3 h-3" /> Auto ({entry.source})
                               </span>
                             )}
                           </div>
                           <p className="text-sm font-medium text-gray-900 truncate">{entry.description}</p>
-                          {entry.reference && (
-                            <p className="text-xs text-gray-400 truncate">Ref: {entry.reference}</p>
-                          )}
+                          {entry.reference && <p className="text-xs text-gray-400 truncate">Ref: {entry.reference}</p>}
                         </div>
                       </div>
                       <div className="text-right flex-shrink-0 ml-3">
                         <p className={`text-sm font-semibold ${
                           entry.type === 'sales' ? 'text-green-600' :
                           entry.type === 'expense' ? 'text-red-600' :
-                          entry.type === 'investment' ? 'text-blue-600' :
-                          'text-purple-600'
+                          entry.type === 'investment' ? 'text-blue-600' : 'text-purple-600'
                         }`}>
                           {entry.type === 'sales' || entry.type === 'investment' ? '+' : '-'}₹{Number(entry.amount || 0).toFixed(2)}
                         </p>
                         {!isAutomatic(entry) && (
                           <div className="flex gap-1 mt-1 justify-end">
-                            <button
-                              onClick={() => {
-                                setSelectedEntry(null);
-                                handleEdit(selectedEntry, idx);
-                              }}
-                              className="p-1 hover:bg-green-50 rounded text-green-600"
-                              title="Edit this entry"
-                            >
+                            <button onClick={() => { setSelectedEntry(null); handleEdit(selectedEntry, idx); }}
+                              className="p-1 hover:bg-green-50 rounded text-green-600" title="Edit">
                               <Edit className="w-3 h-3" />
                             </button>
-                            <button
-                              onClick={() => {
-                                setSelectedEntry(null);
-                                handleDelete(selectedEntry, idx);
-                              }}
-                              className="p-1 hover:bg-red-50 rounded text-red-600"
-                              title="Delete this entry"
-                            >
+                            <button onClick={() => { setSelectedEntry(null); handleDelete(selectedEntry, idx); }}
+                              className="p-1 hover:bg-red-50 rounded text-red-600" title="Delete">
                               <Trash2 className="w-3 h-3" />
                             </button>
                           </div>
@@ -1098,7 +1067,7 @@ const Cashbook = () => {
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
+      {/* Delete Modal */}
       {showDeleteModal && deleteTarget && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 text-center">
@@ -1108,27 +1077,19 @@ const Cashbook = () => {
             </h3>
             <p className="text-gray-500 mb-6">
               {deleteTarget.whole
-                ? 'This will delete the entire day and all its transactions. Later days will be recalculated.'
-                : 'This will remove the selected transaction. Later days will be recalculated.'}
+                ? 'This will delete the entire day. Later days will be recalculated.'
+                : 'This will remove the transaction. Later days will be recalculated.'}
             </p>
             <div className="flex gap-3">
-              <button
-                onClick={() => setShowDeleteModal(false)}
-                className="flex-1 px-4 py-2 border rounded-lg"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDelete}
-                disabled={saving}
-                className="flex-1 px-4 py-2 bg-red-500 text-white rounded-lg"
-              >
+              <button onClick={() => setShowDeleteModal(false)} className="flex-1 px-4 py-2 border rounded-lg">Cancel</button>
+              <button onClick={confirmDelete} disabled={saving} className="flex-1 px-4 py-2 bg-red-500 text-white rounded-lg">
                 {saving ? 'Deleting...' : 'Delete'}
               </button>
             </div>
           </div>
         </div>
       )}
+      
     </div>
   );
 };

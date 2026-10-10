@@ -2,7 +2,8 @@
 import {
   LayoutDashboard, ShoppingBag, Factory, Calculator, Carrot, Box,
   BookOpen, Wallet, TrendingUp, Hammer, Users, BarChart3,
-  FileSpreadsheet, Bell, History, Settings
+  FileSpreadsheet, Bell, History, Settings,
+  FileText                                            // 🆕
 } from 'lucide-react';
 
 export const MENU_SECTIONS = [
@@ -19,7 +20,7 @@ export const MENU_SECTIONS = [
     items: [
       { id: 'daily-sales',      label: 'Daily Sales',      icon: ShoppingBag, path: '/daily-sales' },
       { id: 'production',       label: 'Production',       icon: Factory,     path: '/production' },
-      { id: 'product-costing',  label: 'Product Costing',  icon: Calculator,  path: '/product-costing',  }
+      { id: 'product-costing',  label: 'Product Costing',  icon: Calculator,  path: '/product-costing' }
     ]
   },
   {
@@ -53,6 +54,13 @@ export const MENU_SECTIONS = [
     items: [
       { id: 'reports', label: 'Reports', icon: BarChart3,       path: '/reports' },
       { id: 'excel',   label: 'Excel',   icon: FileSpreadsheet, path: '/excel' }
+    ]
+  },
+  {
+    id: 'personal',
+    label: 'PERSONAL',
+    items: [
+      { id: 'resume', label: 'Resume', icon: FileText, path: '/resume' }
     ]
   },
   {
